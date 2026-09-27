@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Muninn — incident memory</title>
+  <meta name="description" content="An incident-response copilot that remembers past outages." />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- Status bar: honest about which backends are live (see GET /api/health) -->
+  <header class="statusbar" role="banner">
+    <div class="brand"><span class="rune" aria-hidden="true">ᛗ</span><span class="wordmark">muninn</span></div>
+    <div class="health" id="health" aria-live="polite">
+      <span class="badge" data-role="memory">memory: <b>…</b></span>
+      <span class="badge" data-role="llm">llm: <b>…</b></span>
+      <span class="badge" data-role="count"><b>—</b> memories</span>
+    </div>
+    <nav class="views" aria-label="Views">
+      <a href="#/console" class="viewlink" data-view="console">Console</a>
+      <a href="#/insights" class="viewlink" data-view="insights">Insights</a>
+    </nav>
+  </header>
+
+  <!-- CONSOLE view: three-pane war-room -->
+  <main class="console" id="view-console" role="main">
+    <aside class="pane pane-queue" aria-label="Incident queue">
+      <div class="pane-head"><h2>Incidents</h2></div>
+      <div class="queue" id="queue"><!-- renderQueue() fills dense incident rows --></div>
+      <div class="queue-actions">
+        <button class="btn" id="btn-new">New incident</button>
+        <button class="btn btn-ghost" id="btn-seed">Seed demo data</button>
+      </div>
+    </aside>
+
+    <section class="pane pane-active" aria-label="Active incident">
+      <div id="active" class="active-empty">
+        <!-- empty state = invitation, not a void -->
+        <p class="empty-title">Muninn's memory is empty.</p>
+        <p class="empty-sub">Seed the demo dataset to watch it recall past outages.</p>
+        <button class="btn" id="btn-seed-2">Seed demo data</button>
+      </div>
+    </section>
+
+    <aside class="pane pane-memory" aria-label="Recalled memory">
+      <div class="pane-head"><h2>What we've seen before</h2></div>
+      <div class="recall" id="memory"><!-- renderRecall() fills scored past incidents --></div>
+    </aside>
+  </main>
+
+  <!-- INSIGHTS view: MTTR + learning curve (labeled demo data) -->
+  <main class="insights" id="view-insights" role="main" hidden>
+    <h2>Insights <span class="demo-tag">demo dataset</span></h2>
+    <div class="charts" id="insights"><!-- renderInsights() draws MTTR + learning-curve --></div>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

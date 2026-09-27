@@ -1,0 +1,631 @@
+{
+  "meta": {
+    "dataset": "northwind-demo",
+    "synthetic": true,
+    "note": "SYNTHETIC demo data - not real telemetry. Generated for the Muninn demo.",
+    "sample": true,
+    "full_target_incidents": 60
+  },
+  "services": [
+    {
+      "name": "checkout-api",
+      "tier": 1,
+      "description": "Order placement and checkout orchestration.",
+      "dependencies": [
+        "payments-svc",
+        "cart-svc",
+        "identity-svc"
+      ],
+      "oncall": "payments-oncall"
+    },
+    {
+      "name": "payments-svc",
+      "tier": 1,
+      "description": "Payment capture and settlement via external gateway.",
+      "dependencies": [
+        "postgres-primary",
+        "stripe-gateway"
+      ],
+      "oncall": "payments-oncall"
+    },
+    {
+      "name": "identity-svc",
+      "tier": 1,
+      "description": "Authentication, sessions and JWT issuance.",
+      "dependencies": [
+        "postgres-primary",
+        "redis-cache"
+      ],
+      "oncall": "platform-oncall"
+    },
+    {
+      "name": "cart-svc",
+      "tier": 2,
+      "description": "Shopping cart state and pricing.",
+      "dependencies": [
+        "redis-cache",
+        "catalog-svc"
+      ],
+      "oncall": "commerce-oncall"
+    },
+    {
+      "name": "catalog-svc",
+      "tier": 2,
+      "description": "Product catalog and inventory reads.",
+      "dependencies": [
+        "postgres-primary",
+        "search-svc"
+      ],
+      "oncall": "commerce-oncall"
+    },
+    {
+      "name": "search-svc",
+      "tier": 2,
+      "description": "Product search over Elasticsearch.",
+      "dependencies": [
+        "elasticsearch"
+      ],
+      "oncall": "platform-oncall"
+    },
+    {
+      "name": "notifications-svc",
+      "tier": 3,
+      "description": "Email/push notifications via Kafka pipeline.",
+      "dependencies": [
+        "kafka",
+        "email-gateway"
+      ],
+      "oncall": "platform-oncall"
+    },
+    {
+      "name": "recommendations-svc",
+      "tier": 3,
+      "description": "Personalized recommendations from a feature store.",
+      "dependencies": [
+        "search-svc",
+        "feature-store"
+      ],
+      "oncall": "ml-oncall"
+    }
+  ],
+  "runbooks": [
+    {
+      "id": "RB-001",
+      "title": "5xx spike after deploy",
+      "service": "checkout-api",
+      "symptoms": [
+        "elevated 5xx",
+        "errors after release"
+      ],
+      "steps": [
+        "Confirm the spike correlates with a recent deploy in the release log.",
+        "Roll back to the last known-good release.",
+        "Check DB connection-pool saturation (pgbouncer) and raise pool if starved.",
+        "Re-enable the canary gate before rolling forward."
+      ],
+      "tags": [
+        "deploy",
+        "5xx",
+        "connection-pool",
+        "rollback"
+      ]
+    },
+    {
+      "id": "RB-002",
+      "title": "Payment gateway timeouts",
+      "service": "payments-svc",
+      "symptoms": [
+        "gateway timeout",
+        "declined spikes"
+      ],
+      "steps": [
+        "Check upstream gateway status page.",
+        "Verify the circuit breaker opened; confirm retry budget is not exhausted.",
+        "Fail over to the secondary gateway region if error rate > 5%.",
+        "Drain and replay the settlement queue after recovery."
+      ],
+      "tags": [
+        "payment",
+        "gateway-timeout",
+        "circuit-breaker"
+      ]
+    },
+    {
+      "id": "RB-003",
+      "title": "Redis latency / evictions",
+      "service": "cart-svc",
+      "symptoms": [
+        "p99 latency",
+        "cache misses"
+      ],
+      "steps": [
+        "Inspect redis eviction rate and memory usage.",
+        "Identify hot keys; enable client-side TTL jitter.",
+        "Fail over to the redis replica if the primary is saturated.",
+        "Scale the cache tier and re-warm."
+      ],
+      "tags": [
+        "redis",
+        "evictions",
+        "latency"
+      ]
+    },
+    {
+      "id": "RB-004",
+      "title": "DB connection-pool exhaustion",
+      "service": "catalog-svc",
+      "symptoms": [
+        "too many connections",
+        "query queueing"
+      ],
+      "steps": [
+        "Check pgbouncer active vs. idle connections.",
+        "Kill idle-in-transaction sessions.",
+        "Raise the pool ceiling within DB max_connections headroom.",
+        "Find the caller leaking connections and patch."
+      ],
+      "tags": [
+        "db",
+        "connection-pool",
+        "pgbouncer"
+      ]
+    },
+    {
+      "id": "RB-005",
+      "title": "Auth failures / token errors",
+      "service": "identity-svc",
+      "symptoms": [
+        "401 spikes",
+        "invalid token"
+      ],
+      "steps": [
+        "Check node clock skew (NTP).",
+        "Force a JWKS refresh; verify the signing key rotated correctly.",
+        "Purge the stale token-validation cache.",
+        "Confirm downstream services picked up the new keys."
+      ],
+      "tags": [
+        "auth",
+        "jwt",
+        "token"
+      ]
+    },
+    {
+      "id": "RB-006",
+      "title": "Elasticsearch red cluster",
+      "service": "search-svc",
+      "symptoms": [
+        "cluster red",
+        "unassigned shards"
+      ],
+      "steps": [
+        "Check disk high-watermark on data nodes.",
+        "Free disk or add capacity; clear the read-only-allow-delete block.",
+        "Reroute unassigned shards once disk is healthy.",
+        "Verify green status before restoring traffic."
+      ],
+      "tags": [
+        "elasticsearch",
+        "red",
+        "disk-watermark"
+      ]
+    },
+    {
+      "id": "RB-007",
+      "title": "Kafka consumer lag",
+      "service": "notifications-svc",
+      "symptoms": [
+        "consumer lag",
+        "delayed notifications"
+      ],
+      "steps": [
+        "Check partition assignment and rebalance storms.",
+        "Scale consumers up to the partition count.",
+        "Investigate slow downstream (email-gateway) backpressure.",
+        "Only reset offsets as a last resort, with sign-off."
+      ],
+      "tags": [
+        "kafka",
+        "consumer-lag",
+        "rebalance"
+      ]
+    },
+    {
+      "id": "RB-008",
+      "title": "Model-serving errors",
+      "service": "recommendations-svc",
+      "symptoms": [
+        "serving 5xx",
+        "feature timeout"
+      ],
+      "steps": [
+        "Check feature-store latency and timeouts.",
+        "Fall back to popularity-based recommendations.",
+        "Verify the model artifact loaded correctly after deploy.",
+        "Scale serving replicas if CPU-bound."
+      ],
+      "tags": [
+        "ml",
+        "feature-store",
+        "fallback"
+      ]
+    },
+    {
+      "id": "RB-009",
+      "title": "OOMKilled / memory leak",
+      "service": "*",
+      "symptoms": [
+        "restart loop",
+        "OOMKilled"
+      ],
+      "steps": [
+        "Capture a heap dump before the next restart.",
+        "Roll back the suspect release.",
+        "Bump memory limits as a temporary mitigation.",
+        "File a leak bug with the heap dump attached."
+      ],
+      "tags": [
+        "oom",
+        "memory-leak",
+        "restart-loop"
+      ]
+    },
+    {
+      "id": "RB-010",
+      "title": "TLS certificate expiry",
+      "service": "*",
+      "symptoms": [
+        "handshake failure",
+        "cert expired"
+      ],
+      "steps": [
+        "Confirm the expired certificate and its SAN coverage.",
+        "Renew and deploy the certificate.",
+        "Reload the ingress / load balancer.",
+        "Verify the full chain and expiry monitoring."
+      ],
+      "tags": [
+        "tls",
+        "cert",
+        "ingress"
+      ]
+    }
+  ],
+  "incidents": [
+    {
+      "external_id": "INC-0007",
+      "title": "Checkout 5xx after 14:02 release",
+      "service": "checkout-api",
+      "severity": "SEV1",
+      "symptom": "5xx spike after deploy",
+      "error_signature": "http_5xx|deploy|conn_pool",
+      "tags": [
+        "deploy",
+        "5xx",
+        "connection-pool"
+      ],
+      "metrics": {
+        "error_rate": 0.19,
+        "p99_ms": 4200
+      },
+      "log_excerpt": "ERROR checkout-api: 502 upstream\nWARN pgbouncer: no more connections allowed (max 100)\nINFO release 2024.06.1 rolled out 14:02",
+      "family": "A",
+      "seed_role": "memory",
+      "created_days_ago": 240,
+      "status": "resolved",
+      "root_cause": "Release 2024.06.1 lowered the DB pool below peak concurrency; connections exhausted under load.",
+      "remediation_steps": [
+        "Rolled back to 2024.05.9",
+        "Raised pgbouncer pool 100->200"
+      ],
+      "resolver": "payments-oncall",
+      "mttr_minutes": 95
+    },
+    {
+      "external_id": "INC-0021",
+      "title": "Checkout errors post-deploy",
+      "service": "checkout-api",
+      "severity": "SEV1",
+      "symptom": "5xx spike after deploy",
+      "error_signature": "http_5xx|deploy|conn_pool",
+      "tags": [
+        "deploy",
+        "5xx",
+        "connection-pool"
+      ],
+      "metrics": {
+        "error_rate": 0.15,
+        "p99_ms": 3800
+      },
+      "log_excerpt": "ERROR checkout-api: 500 internal\nWARN db: too many connections\nINFO canary skipped",
+      "family": "A",
+      "seed_role": "memory",
+      "created_days_ago": 150,
+      "status": "resolved",
+      "root_cause": "Deploy bypassed the canary gate and re-introduced the pool regression.",
+      "remediation_steps": [
+        "Rolled back release",
+        "Re-enabled canary gate"
+      ],
+      "resolver": "payments-oncall",
+      "mttr_minutes": 48
+    },
+    {
+      "external_id": "INC-0039",
+      "title": "Checkout 5xx spike on rollout",
+      "service": "checkout-api",
+      "severity": "SEV2",
+      "symptom": "5xx spike after deploy",
+      "error_signature": "http_5xx|deploy|conn_pool",
+      "tags": [
+        "deploy",
+        "5xx",
+        "connection-pool"
+      ],
+      "metrics": {
+        "error_rate": 0.08,
+        "p99_ms": 2600
+      },
+      "log_excerpt": "ERROR checkout-api: 502\nINFO release 2024.09.4\nWARN pool saturation 92%",
+      "family": "A",
+      "seed_role": "memory",
+      "created_days_ago": 60,
+      "status": "resolved",
+      "root_cause": "Same pool-exhaustion pattern; caught quickly via prior runbook RB-001.",
+      "remediation_steps": [
+        "Rolled back",
+        "Bumped pool per RB-001"
+      ],
+      "resolver": "payments-oncall",
+      "mttr_minutes": 22
+    },
+    {
+      "external_id": "INC-0058",
+      "title": "Checkout 5xx climbing after deploy",
+      "service": "checkout-api",
+      "severity": "SEV1",
+      "symptom": "5xx spike after deploy",
+      "error_signature": "http_5xx|deploy|conn_pool",
+      "tags": [
+        "deploy",
+        "5xx",
+        "connection-pool"
+      ],
+      "metrics": {
+        "error_rate": 0.17,
+        "p99_ms": 4000
+      },
+      "log_excerpt": "ERROR checkout-api: 502 upstream\nWARN pgbouncer: no more connections\nINFO release 2025.02.2 @ 09:31",
+      "family": "A",
+      "seed_role": "queue",
+      "created_days_ago": 1,
+      "status": "open",
+      "root_cause": "",
+      "remediation_steps": [],
+      "resolver": "",
+      "mttr_minutes": null
+    },
+    {
+      "external_id": "INC-0012",
+      "title": "Catalog DB connection exhaustion",
+      "service": "catalog-svc",
+      "severity": "SEV2",
+      "symptom": "DB connection exhaustion",
+      "error_signature": "db|too_many_connections|pgbouncer",
+      "tags": [
+        "db",
+        "connection-pool",
+        "pgbouncer"
+      ],
+      "metrics": {
+        "error_rate": 0.11,
+        "p99_ms": 5200
+      },
+      "log_excerpt": "FATAL: sorry, too many clients already\nWARN pgbouncer: pool full",
+      "family": "C",
+      "seed_role": "memory",
+      "created_days_ago": 200,
+      "status": "resolved",
+      "root_cause": "A reporting job opened connections without pooling and leaked them.",
+      "remediation_steps": [
+        "Killed idle-in-transaction sessions",
+        "Patched the job to use pgbouncer"
+      ],
+      "resolver": "commerce-oncall",
+      "mttr_minutes": 120
+    },
+    {
+      "external_id": "INC-0034",
+      "title": "Identity DB pool starvation",
+      "service": "identity-svc",
+      "severity": "SEV1",
+      "symptom": "DB connection exhaustion",
+      "error_signature": "db|too_many_connections|pgbouncer",
+      "tags": [
+        "db",
+        "connection-pool",
+        "pgbouncer"
+      ],
+      "metrics": {
+        "error_rate": 0.22,
+        "p99_ms": 6100
+      },
+      "log_excerpt": "FATAL: too many connections\nERROR identity-svc: cannot acquire connection",
+      "family": "C",
+      "seed_role": "memory",
+      "created_days_ago": 95,
+      "status": "resolved",
+      "root_cause": "Shared postgres-primary saturated by a catalog backfill; identity starved.",
+      "remediation_steps": [
+        "Throttled the backfill",
+        "Raised pool ceiling"
+      ],
+      "resolver": "platform-oncall",
+      "mttr_minutes": 44
+    },
+    {
+      "external_id": "INC-0061",
+      "title": "Catalog: too many connections",
+      "service": "catalog-svc",
+      "severity": "SEV2",
+      "symptom": "DB connection exhaustion",
+      "error_signature": "db|too_many_connections|pgbouncer",
+      "tags": [
+        "db",
+        "connection-pool",
+        "pgbouncer"
+      ],
+      "metrics": {
+        "error_rate": 0.09,
+        "p99_ms": 4800
+      },
+      "log_excerpt": "FATAL: sorry, too many clients already\nWARN pgbouncer: 100/100 in use",
+      "family": "C",
+      "seed_role": "queue",
+      "created_days_ago": 0,
+      "status": "open",
+      "root_cause": "",
+      "remediation_steps": [],
+      "resolver": "",
+      "mttr_minutes": null
+    },
+    {
+      "external_id": "INC-0018",
+      "title": "Cart latency from redis evictions",
+      "service": "cart-svc",
+      "severity": "SEV2",
+      "symptom": "elevated latency",
+      "error_signature": "redis|evictions|latency_p99",
+      "tags": [
+        "redis",
+        "evictions",
+        "latency"
+      ],
+      "metrics": {
+        "p99_ms": 1900,
+        "evict_rate": 1200
+      },
+      "log_excerpt": "WARN cart-svc: cache miss ratio 0.6\nWARN redis: evicted_keys spiking",
+      "family": "D",
+      "seed_role": "memory",
+      "created_days_ago": 180,
+      "status": "resolved",
+      "root_cause": "maxmemory reached; hot cart keys evicted causing DB fallthrough.",
+      "remediation_steps": [
+        "Failed over to replica",
+        "Scaled cache tier and re-warmed"
+      ],
+      "resolver": "commerce-oncall",
+      "mttr_minutes": 70
+    },
+    {
+      "external_id": "INC-0045",
+      "title": "Cart p99 latency spike",
+      "service": "cart-svc",
+      "severity": "SEV3",
+      "symptom": "elevated latency",
+      "error_signature": "redis|evictions|latency_p99",
+      "tags": [
+        "redis",
+        "evictions",
+        "latency"
+      ],
+      "metrics": {
+        "p99_ms": 900,
+        "evict_rate": 300
+      },
+      "log_excerpt": "WARN cart-svc: p99 up\nINFO redis mem 88%",
+      "family": "D",
+      "seed_role": "memory",
+      "created_days_ago": 45,
+      "status": "resolved",
+      "root_cause": "Same eviction pattern; mitigated fast via RB-003.",
+      "remediation_steps": [
+        "Added TTL jitter",
+        "Scaled cache per RB-003"
+      ],
+      "resolver": "commerce-oncall",
+      "mttr_minutes": 18
+    },
+    {
+      "external_id": "INC-0026",
+      "title": "Payment gateway timeouts",
+      "service": "payments-svc",
+      "severity": "SEV1",
+      "symptom": "gateway timeouts",
+      "error_signature": "payment|gateway_timeout|circuit_open",
+      "tags": [
+        "payment",
+        "gateway-timeout",
+        "circuit-breaker"
+      ],
+      "metrics": {
+        "error_rate": 0.31,
+        "p99_ms": 8000
+      },
+      "log_excerpt": "ERROR payments-svc: upstream timeout\nWARN circuit-breaker OPEN",
+      "family": "B",
+      "seed_role": "memory",
+      "created_days_ago": 120,
+      "status": "resolved",
+      "root_cause": "Upstream gateway regional latency; circuit opened but retry budget exhausted.",
+      "remediation_steps": [
+        "Failed over to secondary region",
+        "Replayed settlement queue"
+      ],
+      "resolver": "payments-oncall",
+      "mttr_minutes": 140
+    },
+    {
+      "external_id": "INC-0063",
+      "title": "Payment declines + gateway timeouts",
+      "service": "payments-svc",
+      "severity": "SEV1",
+      "symptom": "gateway timeouts",
+      "error_signature": "payment|gateway_timeout|circuit_open",
+      "tags": [
+        "payment",
+        "gateway-timeout",
+        "circuit-breaker"
+      ],
+      "metrics": {
+        "error_rate": 0.27,
+        "p99_ms": 7400
+      },
+      "log_excerpt": "ERROR payments-svc: upstream timeout (stripe-gateway)\nWARN circuit-breaker HALF_OPEN",
+      "family": "B",
+      "seed_role": "queue",
+      "created_days_ago": 0,
+      "status": "open",
+      "root_cause": "",
+      "remediation_steps": [],
+      "resolver": "",
+      "mttr_minutes": null
+    },
+    {
+      "external_id": "INC-0064",
+      "title": "Recommendations returning stale items",
+      "service": "recommendations-svc",
+      "severity": "SEV3",
+      "symptom": "stale recommendations",
+      "error_signature": "ml|stale_features|feature_store_lag",
+      "tags": [
+        "ml",
+        "feature-store",
+        "staleness"
+      ],
+      "metrics": {
+        "staleness_min": 180
+      },
+      "log_excerpt": "WARN recommendations-svc: feature age 180m\nINFO fallback popularity model active",
+      "family": "H-noise",
+      "seed_role": "queue",
+      "created_days_ago": 0,
+      "status": "open",
+      "root_cause": "",
+      "remediation_steps": [],
+      "resolver": "",
+      "mttr_minutes": null
+    }
+  ]
+}

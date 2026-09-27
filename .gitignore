@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Environment / secrets (never commit real keys)
+.env
+.env.local
+
+# SQLite database + WAL/journal (runtime state — never commit)
+data/muninn.db
+data/muninn.db-*
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Local memory store (offline backend persistence — runtime state)
+data/memory_local.json
+data/local_memory_*.json
+
+# Claude Code machine-local settings (permission grants)
+.claude/settings.local.json
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

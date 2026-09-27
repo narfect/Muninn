@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "muninn",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "backend.server"],
+      "port": 8000
+    }
+  ]
+}

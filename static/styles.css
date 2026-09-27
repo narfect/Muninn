@@ -1,0 +1,234 @@
+/* Muninn — design contract (tokens + shell). Component styling marked for Claude Code.
+   Dependency-free, dark-first. No external fonts/CDN (sandbox blocks egress). */
+
+:root {
+  /* Nightwatch palette — color is information (warm=memory on, cold=off) */
+  --bg: #0F1724;
+  --panel: #151E2E;
+  --panel-2: #1B2637;
+  --line: #27344A;
+  --ink: #E7ECF4;
+  --muted: #8DA0BC;
+  --warm: #8B7BF6;      /* signature: recall glow / memory ON */
+  --warm-soft: #8B7BF633;
+  --cold: #57C3D8;      /* baseline / memory OFF */
+  --sev1: #FF5C77;
+  --sev2: #FF9F45;
+  --sev3: #F5D66B;
+  --ok: #3FD8A0;
+
+  /* type: mono for machine data + wordmark, sans for human prose */
+  --mono: ui-monospace, "JetBrains Mono", "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+  /* type scale (1.250) */
+  --t-xs: 12px; --t-sm: 13px; --t-base: 15px; --t-md: 18px;
+  --t-lg: 22px; --t-xl: 28px; --t-2xl: 36px;
+
+  /* spacing + shape */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
+  --r-sm: 6px; --r-md: 10px; --r-lg: 14px;
+  --statusbar-h: 52px;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 var(--t-base)/1.55 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 { font-weight: 600; line-height: 1.2; margin: 0; letter-spacing: -0.01em; }
+h2 { font-size: var(--t-md); }
+
+p { margin: 0 0 var(--sp-3); max-width: 72ch; }
+
+/* machine data reads in mono wherever it appears */
+.mono, .sig, .logline, .score, code, kbd { font-family: var(--mono); }
+
+a { color: var(--warm); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+:focus-visible { outline: 2px solid var(--warm); outline-offset: 2px; border-radius: var(--r-sm); }
+
+/* ---- status bar ---------------------------------------------------------- */
+.statusbar {
+  height: var(--statusbar-h);
+  display: flex; align-items: center; gap: var(--sp-5);
+  padding: 0 var(--sp-5);
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, var(--panel), var(--bg));
+}
+.brand { display: flex; align-items: baseline; gap: var(--sp-2); }
+.rune { color: var(--warm); font-size: var(--t-lg); }
+.wordmark { font-family: var(--mono); font-size: var(--t-md); letter-spacing: 0.02em; }
+.health { display: flex; gap: var(--sp-3); margin-left: auto; color: var(--muted); font-size: var(--t-sm); }
+.badge { font-family: var(--mono); }
+.badge b { color: var(--ink); font-weight: 500; }
+.badge.is-live b { color: var(--ok); }
+.badge.is-local b { color: var(--cold); }
+.views { display: flex; gap: var(--sp-4); }
+.viewlink { color: var(--muted); }
+.viewlink[aria-current="page"] { color: var(--ink); }
+
+/* ---- three-pane console -------------------------------------------------- */
+.console {
+  display: grid;
+  grid-template-columns: 300px 1fr 340px;
+  height: calc(100vh - var(--statusbar-h));
+}
+.pane { overflow-y: auto; padding: var(--sp-4); }
+.pane-queue { border-right: 1px solid var(--line); }
+.pane-memory { border-left: 1px solid var(--line); background: var(--panel); }
+.pane-head { margin-bottom: var(--sp-3); }
+.pane-head h2 { color: var(--muted); font-size: var(--t-sm); text-transform: none; }
+
+/* queue = dense rows, NOT cards */
+.q-row {
+  display: grid; grid-template-columns: 8px 1fr auto; gap: var(--sp-3);
+  align-items: center; padding: var(--sp-3) var(--sp-2);
+  border-bottom: 1px solid var(--line); cursor: pointer;
+}
+.q-row:hover, .q-row[aria-selected="true"] { background: var(--panel-2); }
+.q-sev { width: 8px; height: 8px; border-radius: 50%; }
+.sev-1 { background: var(--sev1); } .sev-2 { background: var(--sev2); } .sev-3 { background: var(--sev3); }
+.q-title { font-size: var(--t-sm); }
+.q-svc { font-family: var(--mono); font-size: var(--t-xs); color: var(--muted); }
+.q-age { font-size: var(--t-xs); color: var(--muted); }
+
+/* ---- buttons ------------------------------------------------------------- */
+.btn {
+  font: 500 var(--t-sm)/1 var(--sans); color: var(--bg); background: var(--warm);
+  border: 0; border-radius: var(--r-sm); padding: 10px 14px; cursor: pointer;
+}
+.btn:hover { filter: brightness(1.08); }
+.btn-ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+.queue-actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-4); }
+
+/* ---- active incident + brief -------------------------------------------- */
+.active-empty { max-width: 44ch; margin: 12vh auto 0; text-align: center; color: var(--muted); }
+.empty-title { color: var(--ink); font-size: var(--t-lg); margin-bottom: var(--sp-2); }
+.empty-sub { margin-bottom: var(--sp-4); }
+.incident-head { margin-bottom: var(--sp-4); }
+.incident-meta { font-family: var(--mono); font-size: var(--t-xs); color: var(--muted); }
+.sig { font-size: var(--t-sm); color: var(--muted); word-break: break-all; }
+
+/* HERO — the Cold <-> Warm memory toggle */
+.toggle {
+  display: inline-flex; border: 1px solid var(--line); border-radius: 999px;
+  padding: 3px; background: var(--panel-2);
+}
+.toggle button { background: transparent; border: 0; color: var(--muted); cursor: pointer;
+  padding: 7px 16px; border-radius: 999px; font: 500 var(--t-sm)/1 var(--sans); }
+.toggle button[aria-pressed="true"][data-mode="cold"] { background: var(--cold); color: var(--bg); }
+.toggle button[aria-pressed="true"][data-mode="warm"] { background: var(--warm); color: var(--bg); }
+.toggle .sub { display: block; font-size: 10px; opacity: .8; margin-top: 2px; }
+
+.brief { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--sp-4);
+  margin: var(--sp-4) 0; background: var(--panel); }
+.brief.is-warm { border-color: var(--warm); box-shadow: 0 0 0 1px var(--warm-soft), 0 0 32px var(--warm-soft); }
+.brief.is-cold { border-color: color-mix(in srgb, var(--cold) 50%, var(--line)); }
+.cite { font-family: var(--mono); font-size: var(--t-xs); color: var(--warm);
+  background: var(--warm-soft); border-radius: var(--r-sm); padding: 1px 6px; cursor: pointer; }
+
+/* ---- memory recall pane (signature glow) -------------------------------- */
+.recall-row { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--sp-3);
+  margin-bottom: var(--sp-3); background: var(--panel-2); }
+.recall-row.is-hit { border-color: var(--warm); box-shadow: 0 0 20px var(--warm-soft); }
+.score { color: var(--warm); font-size: var(--t-sm); }
+.provenance { font-family: var(--mono); font-size: var(--t-xs); color: var(--muted); }
+
+/* ---- insights + misc ----------------------------------------------------- */
+.insights { padding: var(--sp-6); }
+.charts { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-5); margin-top: var(--sp-4); }
+.demo-tag { font-family: var(--mono); font-size: var(--t-xs); color: var(--sev3);
+  border: 1px solid var(--line); border-radius: var(--r-sm); padding: 1px 6px; margin-left: var(--sp-2); }
+.toast { position: fixed; bottom: var(--sp-5); left: 50%; transform: translateX(-50%);
+  background: var(--panel); border: 1px solid var(--warm); color: var(--ink);
+  padding: var(--sp-3) var(--sp-4); border-radius: var(--r-md); box-shadow: 0 8px 30px #0008; }
+
+/* ---- responsive: panes stack as tabs on narrow screens ------------------- */
+@media (max-width: 820px) {
+  .console { grid-template-columns: 1fr; height: auto; }
+  .pane-queue, .pane-memory { border: 0; border-bottom: 1px solid var(--line); }
+  .charts { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+
+/* Component-level styling (brief internals, chart axes, forms) is intentionally
+   left for Claude Code to build against renderers in app.js — keep to these tokens. */
+
+/* ---- queue rows (renderer internals) ------------------------------------- */
+.q-empty, .recall-empty { color: var(--muted); font-size: var(--t-sm); }
+.q-mid { min-width: 0; }
+.q-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.q-right { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.q-badge.resolved { font-family: var(--mono); font-size: 10px; color: var(--ok);
+  border: 1px solid color-mix(in srgb, var(--ok) 40%, var(--line)); border-radius: var(--r-sm); padding: 0 5px; }
+
+/* ---- active incident actions --------------------------------------------- */
+.active-actions { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; margin: var(--sp-4) 0; }
+.thinking { color: var(--muted); font-style: italic; }
+
+/* ---- brief internals ----------------------------------------------------- */
+.brief-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--sp-3); }
+.brief-mode { font-family: var(--mono); font-size: var(--t-xs); letter-spacing: .04em;
+  text-transform: uppercase; color: var(--muted); }
+.brief.is-warm .brief-mode { color: var(--warm); }
+.brief.is-cold .brief-mode { color: var(--cold); }
+.brief-conf { color: var(--ink); }
+.brief-summary { font-size: var(--t-md); line-height: 1.4; }
+.brief h3 { font-size: var(--t-xs); text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); margin: var(--sp-3) 0 var(--sp-1); }
+.brief ol { margin: 0; padding-left: 1.3em; }
+.brief li { margin-bottom: var(--sp-1); }
+.brief-cites, .brief-rb { margin-top: var(--sp-3); display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+.brief-cites .label, .brief-rb .label { color: var(--muted); font-size: var(--t-xs); }
+.brief-nocite { color: var(--muted); font-size: var(--t-sm); margin-top: var(--sp-2); }
+.brief-reflection { border-top: 1px solid var(--line); margin-top: var(--sp-3); padding-top: var(--sp-2); }
+.brief-reflection p { color: var(--muted); font-size: var(--t-sm); }
+.brief-prov { margin-top: var(--sp-3); color: var(--muted); font-size: var(--t-xs); }
+
+/* ---- compare split (the centerpiece) ------------------------------------- */
+.compare { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-4); }
+.compare-col .brief { margin-top: 0; }
+
+/* ---- recall focus -------------------------------------------------------- */
+.recall-row.is-focus { outline: 2px solid var(--warm); outline-offset: 1px; }
+.recall-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: var(--sp-1); }
+.recall-content { font-size: var(--t-sm); color: var(--muted); margin: 0; }
+
+/* ---- resolve form + resolution ------------------------------------------- */
+.resolve-form, .resolution, .timeline { border-top: 1px solid var(--line); margin-top: var(--sp-5); padding-top: var(--sp-4); }
+.resolve-form h3, .resolution h3, .tl-head { font-size: var(--t-sm); color: var(--muted); margin-bottom: var(--sp-2); }
+.field { display: block; width: 100%; margin-bottom: var(--sp-2); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--ink);
+  padding: 9px 11px; font: 400 var(--t-sm)/1.4 var(--sans); }
+.field::placeholder { color: var(--muted); }
+.res-note { color: var(--ok); font-size: var(--t-sm); }
+.res-meta { color: var(--muted); font-size: var(--t-xs); }
+.tl-row { display: flex; gap: var(--sp-3); font-size: var(--t-sm); padding: 2px 0; }
+.tl-kind { color: var(--warm); min-width: 78px; font-size: var(--t-xs); }
+.tl-msg { color: var(--muted); }
+
+/* ---- insights: stat cards + charts --------------------------------------- */
+.stat-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--sp-4); margin-bottom: var(--sp-5); }
+.stat { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--sp-4); background: var(--panel); }
+.stat-val { font-size: var(--t-xl); color: var(--warm); }
+.stat-label { color: var(--muted); font-size: var(--t-xs); text-transform: uppercase; letter-spacing: .05em; }
+.chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-5); }
+.chart-card { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--sp-4); background: var(--panel); }
+.chart-card h3 { font-size: var(--t-sm); color: var(--muted); margin-bottom: var(--sp-3); }
+.chart-card canvas { width: 100%; height: auto; }
+
+@media (max-width: 820px) {
+  .compare, .stat-cards, .chart-grid { grid-template-columns: 1fr; }
+}

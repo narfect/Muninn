@@ -1,0 +1,228 @@
+"""HTTP API endpoint handlers (FR-8/9/13 + happy path).
+
+Each handler receives a ``Request`` and the wired ``AppContext`` (services) and returns
+a ``Response``. Handlers are defensive: validate input, return structured JSON errors
+with correct status codes, and never leak stack traces (the router logs + shapes 500s).
+"""
+from __future__ import annotations
+
+import json
+import queue
+import threading
+from typing import TYPE_CHECKING, Any
+
+from ..config import ROOT
+from ..models import Incident
+from ..router import Request, Response
+
+if TYPE_CHECKING:  # avoid import cycle at runtime
+    from ..server import AppContext
+
+_SAMPLE = ROOT / "data" / "seed_sample.json"
+
+
+class Routes:
+    """Groups endpoint handlers around the wired application context."""
+
+    def __init__(self, ctx: "AppContext") -> None:
+        self.ctx = ctx
+
+    # --- system -----------------------------------------------------------
+    def health(self, req: "Request") -> "Response":
+        return Response.json({
+            "status": "ok",
+            "memory": self.ctx.memory.health(),
+            "llm": self.ctx.reasoner.health(),
+            "memory_backend": self.ctx.settings.resolved_memory_backend(),
+            "llm_backend": self.ctx.settings.resolved_llm_backend(),
+            "n_memories": self.ctx.memory.count(),
+        })
+
+    # --- catalog ----------------------------------------------------------
+    def list_services(self, req: "Request") -> "Response":
+        return Response.json({"services": [s.as_dict() for s in self.ctx.repo.list_services()]})
+
+    def list_runbooks(self, req: "Request") -> "Response":
+        return Response.json({"runbooks": [r.as_dict() for r in self.ctx.repo.list_runbooks()]})
+
+    # --- incidents --------------------------------------------------------
+    def list_incidents(self, req: "Request") -> "Response":
+        status = req.query.get("status") or None
+        service = req.query.get("service") or None
+        incs = self.ctx.repo.list_incidents(status=status, service=service)
+        return Response.json({"incidents": [i.as_dict() for i in incs]})
+
+    def create_incident(self, req: "Request") -> "Response":
+        inc = self.ctx.incidents.create_incident(req.json())
+        return Response.json({"incident": inc.as_dict()}, status=201)
+
+    def get_incident(self, req: "Request") -> "Response":
+        inc = self.ctx.repo.get_incident(self._id(req))
+        if inc is None:
+            return Response.error("incident not found", status=404, code="not_found")
+        return Response.json({"incident": inc.as_dict(),
+                              "timeline": self.ctx.repo.list_timeline(inc.id)})
+
+    def transition_incident(self, req: "Request") -> "Response":
+        body = req.json()
+        inc = self.ctx.incidents.transition(self._id(req), str(body.get("status", "")))
+        return Response.json({"incident": inc.as_dict()})
+
+    def resolve_incident(self, req: "Request") -> "Response":
+        body = req.json()
+        inc = self.ctx.incidents.resolve(
+            self._id(req), root_cause=str(body.get("root_cause", "")),
+            remediation_steps=body.get("remediation_steps") or [],
+            resolver=str(body.get("resolver", "")))
+        return Response.json({"incident": inc.as_dict()})
+
+    def incident_feedback(self, req: "Request") -> "Response":
+        body = req.json()
+        inc = self.ctx.incidents.record_feedback(
+            self._id(req), helpful=bool(body.get("helpful")),
+            root_cause_correct=bool(body.get("root_cause_correct")),
+            note=str(body.get("note", "")))
+        return Response.json({"incident": inc.as_dict()})
+
+    # --- triage / agent ---------------------------------------------------
+    def triage(self, req: "Request") -> "Response":
+        body = req.json()
+        incident = self._incident_from(body)
+        use_memory = bool(body.get("use_memory", True))
+        out = self.ctx.triage.triage(incident, use_memory=use_memory)
+        return Response.json({
+            "brief": out["brief"].as_dict(),
+            "recall": out["recall"].as_dict() if out["recall"] else None,
+        })
+
+    def triage_stream(self, req: "Request") -> "Response":
+        incident = self._incident_from(dict(req.query))
+        use_memory = req.query.get("use_memory", "true").lower() != "false"
+        q: "queue.Queue[tuple[str, Any]]" = queue.Queue()
+
+        def worker() -> None:
+            try:
+                out = self.ctx.triage.triage(incident, use_memory=use_memory,
+                                             stream=lambda t: q.put(("token", t)))
+                q.put(("done", out["brief"].as_dict()))
+            except Exception as exc:  # noqa: BLE001 - surface as an SSE error frame
+                q.put(("error", str(exc)))
+            finally:
+                q.put(("end", None))
+
+        def gen():
+            threading.Thread(target=worker, daemon=True).start()
+            while True:
+                kind, data = q.get()
+                if kind == "end":
+                    break
+                if kind == "token":
+                    yield f"event: token\ndata: {json.dumps({'t': data})}\n\n"
+                elif kind == "done":
+                    yield f"event: done\ndata: {json.dumps(data)}\n\n"
+                elif kind == "error":
+                    yield f"event: error\ndata: {json.dumps({'error': data})}\n\n"
+        return Response.sse(gen)
+
+    def compare(self, req: "Request") -> "Response":
+        incident = self._incident_from(req.json())
+        out = self.ctx.triage.compare(incident)
+        return Response.json({"cold": out["cold"].as_dict(), "warm": out["warm"].as_dict()})
+
+    # --- memory inspector -------------------------------------------------
+    def memory_recall(self, req: "Request") -> "Response":
+        body = req.json()
+        query = str(body.get("query", "")).strip()
+        if not query:
+            raise ValueError("query is required")
+        top_k = int(body.get("top_k", self.ctx.settings.recall_top_k) or 5)
+        return Response.json(self.ctx.memory.recall(query, top_k=top_k).as_dict())
+
+    def memory_reflect(self, req: "Request") -> "Response":
+        query = str(req.json().get("query", "")).strip()
+        if not query:
+            raise ValueError("query is required")
+        return Response.json({"reflection": self.ctx.memory.reflect(query),
+                              "backend": self.ctx.memory.backend_name})
+
+    # --- metrics ----------------------------------------------------------
+    def metrics_summary(self, req: "Request") -> "Response":
+        return Response.json(self.ctx.metrics.summary())
+
+    def metrics_mttr(self, req: "Request") -> "Response":
+        return Response.json(self.ctx.metrics.mttr(req.query.get("service") or None))
+
+    def metrics_learning_curve(self, req: "Request") -> "Response":
+        return Response.json({"series": self.ctx.metrics.learning_curve()})
+
+    # --- demo controls ----------------------------------------------------
+    def demo_seed(self, req: "Request") -> "Response":
+        try:
+            data = json.loads(_SAMPLE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return Response.error(f"seed dataset unavailable: {exc}", status=500,
+                                  code="seed_error")
+        counts = self.ctx.incidents.seed(data)
+        return Response.json({"seeded": counts, "synthetic": True,
+                              "note": data.get("meta", {}).get("note", "synthetic demo data")})
+
+    def demo_reset(self, req: "Request") -> "Response":
+        self.ctx.repo.reset()
+        if hasattr(self.ctx.memory, "reset"):
+            self.ctx.memory.reset()
+        return Response.json({"reset": True})
+
+    # --- helpers ----------------------------------------------------------
+    def _id(self, req: "Request") -> int:
+        try:
+            return int(req.path_params["id"])
+        except (KeyError, ValueError):
+            raise ValueError("invalid incident id")
+
+    def _incident_from(self, data: dict[str, Any]) -> Incident:
+        """Resolve an incident by id from the store, or build an inline one from fields."""
+        inc_id = data.get("incident_id")
+        if inc_id not in (None, ""):
+            inc = self.ctx.repo.get_incident(int(inc_id))
+            if inc is None:
+                raise ValueError(f"incident {inc_id} not found")
+            return inc
+        service = str(data.get("service", "")).strip()
+        title = str(data.get("title", "")).strip()
+        if not service or not title:
+            raise ValueError("provide incident_id, or inline title + service")
+        tags = data.get("tags") or []
+        if isinstance(tags, str):
+            tags = [t.strip() for t in tags.split(",") if t.strip()]
+        return Incident(
+            external_id=str(data.get("external_id", "INLINE")), title=title,
+            service=service, severity=str(data.get("severity", "SEV3")).upper(),
+            symptom=str(data.get("symptom", title)),
+            error_signature=str(data.get("error_signature", "")),
+            tags=list(tags), log_excerpt=str(data.get("log_excerpt", "")))
+
+    # --- routing table (CONCRETE STRUCTURE) -------------------------------
+    def table(self) -> list[tuple[str, str, Any]]:
+        """(method, path_pattern, handler). ``{id}`` is a path parameter.
+        The router matches these in order; static/SPA is handled by the server."""
+        return [
+            ("GET", "/api/health", self.health),
+            ("GET", "/api/services", self.list_services),
+            ("GET", "/api/runbooks", self.list_runbooks),
+            ("GET", "/api/incidents", self.list_incidents),
+            ("POST", "/api/incidents", self.create_incident),
+            ("GET", "/api/incidents/{id}", self.get_incident),
+            ("POST", "/api/incidents/{id}/transition", self.transition_incident),
+            ("POST", "/api/incidents/{id}/resolve", self.resolve_incident),
+            ("POST", "/api/incidents/{id}/feedback", self.incident_feedback),
+            ("POST", "/api/triage", self.triage),
+            ("GET", "/api/triage/stream", self.triage_stream),
+            ("POST", "/api/compare", self.compare),
+            ("POST", "/api/memory/recall", self.memory_recall),
+            ("POST", "/api/memory/reflect", self.memory_reflect),
+            ("GET", "/api/metrics/summary", self.metrics_summary),
+            ("GET", "/api/metrics/mttr", self.metrics_mttr),
+            ("GET", "/api/metrics/learning-curve", self.metrics_learning_curve),
+            ("POST", "/api/demo/seed", self.demo_seed),
+            ("POST", "/api/demo/reset", self.demo_reset),
+        ]

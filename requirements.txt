@@ -1,0 +1,12 @@
+# Muninn runs on the Python standard library alone — no install is required to run or
+# test the app offline (http.server, sqlite3, urllib, json, unittest).
+#
+# The two packages below are OPTIONAL accelerators used only if present:
+#   numpy    — faster vector math in the local retriever (pure-Python fallback exists)
+#   requests — convenience HTTP for the Groq/Hindsight clients (urllib fallback exists)
+#
+# Install only if you want the accelerated paths:
+#   pip install -r requirements.txt
+
+numpy==1.26.4
+requests==2.31.0
