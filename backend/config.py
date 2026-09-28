@@ -99,6 +99,12 @@ class Settings:
     recall_top_k: int = field(
         default_factory=lambda: int(_env("MUNINN_RECALL_TOP_K", "5") or 5)
     )
+    # --- transport hardening (S9) ---
+    # Reject request bodies larger than this (bytes) with HTTP 413 before reading them,
+    # so a bogus Content-Length can't exhaust memory. Default 1 MiB.
+    max_body_bytes: int = field(
+        default_factory=lambda: int(_env("MUNINN_MAX_BODY_BYTES", "1048576") or 1048576)
+    )
 
     def resolved_memory_backend(self) -> str:
         """Decide which memory backend will actually be used."""

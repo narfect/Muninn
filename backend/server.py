@@ -80,7 +80,7 @@ def _safe_static_path(url_path: str) -> str | None:
     return target if os.path.isfile(target) else None
 
 
-def make_handler(router: Router):
+def make_handler(router: Router, max_body_bytes: int = 1_048_576):
     class MuninnHandler(BaseHTTPRequestHandler):
         server_version = "Muninn/1.0"
         protocol_version = "HTTP/1.1"
@@ -88,9 +88,26 @@ def make_handler(router: Router):
         def log_message(self, fmt: str, *args: Any) -> None:  # route through logging
             log.info("%s - %s", self.address_string(), fmt % args)
 
+        def _content_length(self) -> int:
+            try:
+                return max(0, int(self.headers.get("Content-Length", 0) or 0))
+            except (TypeError, ValueError):
+                return 0
+
         def _read_body(self) -> bytes:
-            length = int(self.headers.get("Content-Length", 0) or 0)
+            length = self._content_length()
             return self.rfile.read(length) if length else b""
+
+        # SEC3: minimal response hardening headers applied to every response.
+        _SECURITY_HEADERS = {
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options": "DENY",
+            "Referrer-Policy": "no-referrer",
+        }
+
+        def _send_security_headers(self) -> None:
+            for k, v in self._SECURITY_HEADERS.items():
+                self.send_header(k, v)
 
         def _write(self, resp: Response) -> None:
             if resp.stream is not None:
@@ -99,6 +116,7 @@ def make_handler(router: Router):
             self.send_response(resp.status)
             for k, v in resp.headers.items():
                 self.send_header(k, v)
+            self._send_security_headers()
             self.send_header("Content-Length", str(len(resp.body)))
             self.end_headers()
             if self.command != "HEAD":
@@ -108,6 +126,15 @@ def make_handler(router: Router):
             self.send_response(resp.status)
             for k, v in resp.headers.items():
                 self.send_header(k, v)
+            self._send_security_headers()
+            # S10: one SSE response per connection — never keep it alive.
+            self.close_connection = True
+            if self.command == "HEAD":
+                # A HEAD must not spawn the worker or stream a body: send headers and stop
+                # BEFORE iterating resp.stream() (which is what starts the triage worker).
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             self.end_headers()
             try:
                 for chunk in resp.stream():  # type: ignore[misc]
@@ -135,6 +162,14 @@ def make_handler(router: Router):
             if method == "GET" and not path.startswith("/api/"):
                 self._serve_static()
                 return
+            # S9: reject an oversized body from its declared Content-Length, BEFORE reading
+            # it, so a bogus length can't exhaust memory. Close the connection since the
+            # unread body would otherwise desync a kept-alive stream.
+            if self._content_length() > max_body_bytes:
+                self.close_connection = True
+                self._write(Response.error("request body too large", status=413,
+                                           code="payload_too_large"))
+                return
             req = Request.build(method, self.path, dict(self.headers), self._read_body())
             self._write(router.dispatch(req))
 
@@ -155,7 +190,8 @@ def run(settings: Settings = default_settings) -> None:
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     ctx = build_context(settings)
     router = build_router(ctx)
-    httpd = ThreadingHTTPServer((settings.host, settings.port), make_handler(router))
+    httpd = ThreadingHTTPServer((settings.host, settings.port),
+                                make_handler(router, settings.max_body_bytes))
     log.info("Muninn listening on http://%s:%d  (memory=%s, llm=%s)",
              settings.host, settings.port,
              settings.resolved_memory_backend(), settings.resolved_llm_backend())

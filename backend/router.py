@@ -68,10 +68,13 @@ class Response:
 
     @classmethod
     def sse(cls, stream: StreamFn) -> "Response":
+        # S10: SSE forces `Connection: close` (not keep-alive). Under HTTP/1.1 a stream
+        # with no Content-Length on a kept-alive connection can make browsers auto-reconnect
+        # and silently re-run triage; closing the connection after the stream avoids that.
         return cls(status=200, stream=stream,
                    headers={"Content-Type": "text/event-stream",
                             "Cache-Control": "no-cache",
-                            "Connection": "keep-alive",
+                            "Connection": "close",
                             "X-Accel-Buffering": "no"})
 
 
@@ -116,11 +119,19 @@ class Router:
         except ConflictError as exc:
             return Response.error(str(exc) or "conflict", status=409, code="conflict")
         except NotImplementedError as exc:
+            # SEC2: log the detail server-side, but never echo exception text to the client.
             log.warning("handler not implemented: %s %s (%s)", req.method, req.path, exc)
-            return Response.error(f"endpoint not implemented yet: {exc}", status=501,
+            return Response.error("endpoint not implemented yet", status=501,
                                   code="not_implemented")
+        except json.JSONDecodeError as exc:
+            # SEC2: a malformed request body is a client error, but the parser's message
+            # ("Expecting value: line 1 ...") leaks internals — return a generic message.
+            log.info("bad JSON body on %s %s: %s", req.method, req.path, exc)
+            return Response.error("invalid JSON body", status=400, code="bad_request")
         except ValueError as exc:
-            return Response.error(f"bad request: {exc}", status=400, code="bad_request")
+            # Domain validation raises ValueError with a caller-safe message (e.g.
+            # "remediation_steps must be a list") — surface it as-is.
+            return Response.error(str(exc) or "bad request", status=400, code="bad_request")
         except Exception:  # never leak a traceback to the client
             log.error("unhandled error on %s %s\n%s", req.method, req.path, traceback.format_exc())
             return Response.error("internal server error", status=500, code="internal_error")
