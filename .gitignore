@@ -30,6 +30,11 @@ data/local_memory_*.json
 # Claude Code machine-local settings (permission grants)
 .claude/settings.local.json
 
+# Project documentation and generated content
+/docs/
+/content/
+/CLAUDE.md
+
 # OS / editor junk
 .DS_Store
 Thumbs.db
