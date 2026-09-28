@@ -8,12 +8,21 @@ scale and keeps the threaded HTTP server simple and safe).
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any, Optional
 
 from .errors import ConflictError
 from .models import Incident, Runbook, Service, User
+
+log = logging.getLogger("muninn.db")
+
+# Bound the write-ahead log: SQLite's implicit default is 1000 pages (~4 MiB at the 4 KiB
+# page size); a lower cap checkpoints more eagerly so the -wal file stays small during a
+# long-running demo. WAL mode itself is kept on (better read/write concurrency for the
+# threaded HTTP server). A clean shutdown additionally runs a TRUNCATE checkpoint.
+WAL_AUTOCHECKPOINT_PAGES = 400
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS services (
@@ -101,6 +110,7 @@ def connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute(f"PRAGMA wal_autocheckpoint={WAL_AUTOCHECKPOINT_PAGES};")
     conn.execute("PRAGMA foreign_keys=ON;")
     return conn
 
@@ -166,6 +176,16 @@ class Repository:
     def __init__(self, db_path: str):
         self.db_path = db_path
         init_db(db_path)
+
+    def checkpoint(self) -> None:
+        """Fully flush the WAL into the main database and truncate the -wal file. Call on a
+        clean shutdown so the DB is left compact and no stale WAL lingers. Best-effort: a
+        checkpoint failure must never crash shutdown, so it is logged and swallowed."""
+        try:
+            with connect(self.db_path) as conn:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        except sqlite3.Error as exc:
+            log.warning("wal checkpoint on shutdown failed: %s", exc)
 
     # --- services ---
     def upsert_service(self, svc: Service) -> None:

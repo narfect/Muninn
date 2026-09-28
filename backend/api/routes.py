@@ -12,7 +12,7 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 from ..config import ROOT
-from ..errors import NotFoundError
+from ..errors import LockedError, NotFoundError
 from ..models import ADMIN, RESPONDER, VIEWER, Incident
 from ..router import Request, Response
 
@@ -30,6 +30,12 @@ class Routes:
 
     # --- system -----------------------------------------------------------
     def health(self, req: "Request") -> "Response":
+        # An anonymous probe gets liveness only. The backend/provenance detail below reveals
+        # which memory/LLM backends are configured and how many memories exist — deployment
+        # fingerprinting an unauthenticated caller has no need for — so it is authenticated-
+        # only (any role). The frontend health badges run after the boot gate authenticates.
+        if req.current_user is None:
+            return Response.json({"status": "ok"})
         return Response.json({
             "status": "ok",
             "memory": self.ctx.memory.health(),
@@ -41,6 +47,7 @@ class Routes:
 
     # --- auth -------------------------------------------------------------
     def signup(self, req: "Request") -> "Response":
+        self._enforce_rate_limit(req, self.ctx.signup_limiter)
         body = req.json()
         user, token, csrf = self.ctx.auth.signup(
             email=str(body.get("email", "")), password=str(body.get("password", "")),
@@ -50,6 +57,7 @@ class Routes:
         return resp
 
     def login(self, req: "Request") -> "Response":
+        self._enforce_rate_limit(req, self.ctx.login_limiter)
         body = req.json()
         user, token, csrf = self.ctx.auth.login(
             email=str(body.get("email", "")), password=str(body.get("password", "")))
@@ -200,7 +208,15 @@ class Routes:
         query = str(body.get("query", "")).strip()
         if not query:
             raise ValueError("query is required")
-        top_k = int(body.get("top_k", self.ctx.settings.recall_top_k) or 5)
+        # Clamp top_k so a client can't request an unbounded recall: coerce a falsy/absent
+        # value to the configured default, floor at 1, and cap at 50. A non-numeric value is
+        # a 400 (bad request) via the ValueError below, never an unhandled 500.
+        default_k = self.ctx.settings.recall_top_k
+        try:
+            top_k = int(body.get("top_k", default_k) or default_k)
+        except (TypeError, ValueError):
+            raise ValueError("top_k must be an integer")
+        top_k = max(1, min(top_k, 50))
         return Response.json(self.ctx.memory.recall(query, top_k=top_k).as_dict())
 
     def memory_reflect(self, req: "Request") -> "Response":
@@ -238,6 +254,15 @@ class Routes:
         return Response.json({"reset": True})
 
     # --- helpers ----------------------------------------------------------
+    @staticmethod
+    def _enforce_rate_limit(req: "Request", limiter: Any) -> None:
+        """Fixed-window per-IP throttle for the auth endpoints. Keys on the client IP ONLY
+        (never the email), so it can't be abused to probe whether an account exists, and
+        raises a generic ``LockedError`` -> HTTP 429 on overflow, preserving the uniform
+        auth-error behaviour. A disabled limiter (limit/window 0) always allows."""
+        if not limiter.allow(req.client_ip):
+            raise LockedError("too many attempts; please try again later")
+
     def _id(self, req: "Request") -> int:
         try:
             return int(req.path_params["id"])

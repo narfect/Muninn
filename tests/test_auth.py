@@ -292,8 +292,23 @@ class TestRbacThroughRouter(unittest.TestCase):
 
     def test_health_is_public(self):
         _, router = _router()
-        resp, _ = _dispatch(router, "GET", "/api/health")
+        resp, body = _dispatch(router, "GET", "/api/health")
         self.assertEqual(resp.status, 200)
+        # Anonymous callers get liveness ONLY — no backend/provenance fingerprinting.
+        self.assertEqual(body, {"status": "ok"})
+        self.assertNotIn("memory_backend", body)
+        self.assertNotIn("n_memories", body)
+
+    def test_health_detail_is_authenticated_only(self):
+        _, router = _router()
+        _, _, admin_h = _signup(router, "admin@x.com", "pw-good-strong-1")
+        resp, body = _dispatch(router, "GET", "/api/health", headers=admin_h)
+        self.assertEqual(resp.status, 200)
+        # An authenticated caller (any role) sees the full backend/provenance detail.
+        self.assertEqual(body["memory_backend"], "local")
+        self.assertEqual(body["llm_backend"], "local")
+        self.assertIn("n_memories", body)
+        self.assertIn("llm", body)
 
     def test_role_matrix(self):
         _, router = _router()

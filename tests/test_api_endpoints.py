@@ -107,6 +107,22 @@ class TestApiMemoryStory(unittest.TestCase):
         self.assertIn("score", body["memories"][0])
         self.assertTrue(body["memories"][0]["source"])
 
+    def test_recall_top_k_is_clamped_not_unbounded(self):
+        # A huge top_k must be capped (<=50), not honoured verbatim, and must not error.
+        _, router = _app()
+        _req(router, "POST", "/api/demo/seed")
+        resp, body = _req(router, "POST", "/api/memory/recall",
+                          {"query": "checkout 5xx conn_pool", "top_k": 100000})
+        self.assertEqual(resp.status, 200)
+        self.assertLessEqual(len(body["memories"]), 50)
+
+    def test_recall_non_numeric_top_k_is_400(self):
+        # A non-numeric top_k is a client error (400), never an unhandled 500.
+        _, router = _app()
+        resp, _ = _req(router, "POST", "/api/memory/recall",
+                       {"query": "x", "top_k": "abc"})
+        self.assertEqual(resp.status, 400)
+
     def test_feedback(self):
         ctx, router = _app()
         _, created = _req(router, "POST", "/api/incidents",

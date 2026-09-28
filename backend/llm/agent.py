@@ -23,6 +23,7 @@ import json
 import re
 from typing import Any, Callable, Optional
 
+from ..config import settings as _DEFAULT_SETTINGS
 from ..models import Brief, Incident, RecallResult
 from .prompts import BRIEF_INSTRUCTIONS, TRIAGE_SYSTEM_PROMPT
 from .tools import TOOL_SPECS, dispatch
@@ -76,14 +77,53 @@ class TriageAgent:
             final_content = resp.get("content")
             break
 
-        brief = _parse_brief(final_content) or _degrade(seen_memories)
+        parsed = _parse_brief(final_content)
+        if parsed is not None:
+            # The configured reasoner produced a usable brief — stamp it honestly.
+            brief = parsed
+            brief.llm_backend = getattr(self.reasoner, "backend_name", "local")
+            brief.degraded = False
+        else:
+            # The configured reasoner produced NOTHING usable (empty/None content or
+            # unparseable output — e.g. Groq unreachable, so chat() returned safe empties).
+            # Fall back to a deterministic offline LocalReasoner so the brief stays grounded,
+            # and stamp provenance for what ACTUALLY produced it: "local", not the configured
+            # backend. ``degraded`` records that a non-local backend was configured but a local
+            # fallback answered — the honesty the security pass required.
+            brief = self._local_fallback(incident, seen_memories, use_memory)
+            brief.llm_backend = "local"
+            configured = getattr(self.reasoner, "backend_name", "local")
+            brief.degraded = configured != "local"
+
         brief.memory_used = use_memory
         brief.memory_backend = getattr(self.memory, "backend_name", "local")
-        brief.llm_backend = getattr(self.reasoner, "backend_name", "local")
         if not use_memory:
             brief.citations = []
         if on_token:
             _stream_brief(brief, on_token)
+        return brief
+
+    def _local_fallback(self, incident: Incident, seen_memories: list[dict[str, Any]],
+                        use_memory: bool) -> Brief:
+        """Produce a grounded brief with a real, deterministic offline ``LocalReasoner`` when
+        the configured reasoner returned nothing usable. Drives the same synthesis path a
+        locally-configured Muninn would use (memories fed in as a tool result), then keeps the
+        "(degraded)" summary prefix so the UI and logs stay honest about the fallback."""
+        from .client import LocalReasoner  # local import: avoids any llm-package import cycle
+        settings = getattr(self.reasoner, "settings", None) or _DEFAULT_SETTINGS
+        local = LocalReasoner(settings)
+        messages: list[dict[str, Any]] = [
+            {"role": "user", "content": _incident_user_msg(incident)},
+        ]
+        if use_memory and seen_memories:
+            messages.append({
+                "role": "tool", "name": "recall_memory",
+                "content": json.dumps({"memories": seen_memories}),
+            })
+        resp = local.chat(messages, tools=None)
+        brief = _parse_brief(resp.get("content")) or _degrade(seen_memories)
+        if not brief.summary.startswith("(degraded)"):
+            brief.summary = "(degraded) " + brief.summary
         return brief
 
 

@@ -87,6 +87,20 @@ Accounts use email + password with HttpOnly session cookies and double-submit CS
 protection. **The first account created becomes the `admin`**; everyone who signs up after
 that starts as a `viewer`, and an admin promotes them from the **Users** view.
 
+> ⚠️ **Deploying anywhere non-local — read this.** Open demo mode means **no
+> authentication at all**: anyone who can reach the server can mint an **admin** session
+> with one call to `POST /api/auth/demo-login`. Before exposing Muninn beyond your own
+> machine you **must**:
+>
+> - set a strong random **`MUNINN_SERVER_SECRET`** — this force-disables open demo mode
+>   (the switcher and `demo-login` go away and the login gate returns), and stabilizes CSRF
+>   tokens across restarts; and
+> - set **`MUNINN_COOKIE_SECURE=true`** when serving over HTTPS, so session/CSRF cookies
+>   are only ever sent on secure connections.
+>
+> On startup the server logs a clear **WARNING** whenever open demo mode is active, so an
+> accidental open deployment is visible in the logs.
+
 ## Roles and capabilities
 
 Roles form a hierarchy — `viewer < responder < admin` — and each higher role includes

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
@@ -50,12 +51,19 @@ class Reasoner(ABC):
 class GroqClient(Reasoner):
     backend_name = "groq"
 
+    # health() does a cheap real probe (GET {base_url}/models) and caches the verdict so
+    # /api/health stays fast and never hammers the provider. Short timeout so an unreachable
+    # network degrades quickly instead of blocking the health endpoint.
+    _HEALTH_TTL_SECONDS = 30.0
+    _HEALTH_TIMEOUT_SECONDS = 3.0
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.base_url = settings.groq_base_url.rstrip("/")
         self.api_key = settings.groq_api_key
         self.model = settings.groq_model
         self.timeout = settings.request_timeout
+        self._health_cache: Optional[tuple[float, dict[str, Any]]] = None
 
     def chat(self, messages, *, tools=None, temperature=0.2):
         payload: dict[str, Any] = {
@@ -77,6 +85,10 @@ class GroqClient(Reasoner):
                     "Content-Type": "application/json",
                     "Accept": "application/json",
                     "Authorization": f"Bearer {self.api_key}",
+                    # Cloudflare in front of api.groq.com blocks urllib's default UA with a
+                    # 403 "error code: 1010", so a live call never reaches the API. Send an
+                    # explicit UA so the request is allowed through.
+                    "User-Agent": "Muninn/1.0",
                 },
             )
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
@@ -119,9 +131,48 @@ class GroqClient(Reasoner):
         return {"content": content, "tool_calls": tool_calls}
 
     def health(self):
-        ok = bool(self.api_key)
-        return {"backend": self.backend_name, "ok": ok,
-                "detail": "configured" if ok else "no GROQ_API_KEY"}
+        """Cheap, cached liveness probe of the Groq endpoint. NEVER raises and NEVER touches
+        the network when no key is set. A false result here does NOT break triage: chat()
+        already degrades to safe empties and the agent falls back to the local reasoner.
+
+        Buckets: no key -> ok:false "no GROQ_API_KEY"; endpoint answered 2xx -> ok:true
+        "reachable"; 401/403 -> ok:false "unauthorized"; anything unreachable/timeout/error
+        -> ok:false "unreachable". Result cached ~30s so /api/health stays fast."""
+        if not self.api_key:
+            return {"backend": self.backend_name, "ok": False, "detail": "no GROQ_API_KEY"}
+        now = time.monotonic()
+        cached = self._health_cache
+        if cached is not None and (now - cached[0]) < self._HEALTH_TTL_SECONDS:
+            return cached[1]
+        result = self._probe()
+        self._health_cache = (now, result)
+        return result
+
+    def _probe(self) -> dict[str, Any]:
+        """One real GET {base_url}/models with a short timeout. Isolated so health() can cache
+        it. Never raises: every failure mode maps to an ok:false verdict."""
+        try:
+            req = urllib.request.Request(
+                f"{self.base_url}/models", method="GET",
+                headers={"Authorization": f"Bearer {self.api_key}",
+                         "Accept": "application/json",
+                         # See chat(): Cloudflare 403 "1010" without an explicit UA.
+                         "User-Agent": "Muninn/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=self._HEALTH_TIMEOUT_SECONDS):
+                pass  # a non-error response proves the endpoint is reachable + authorized
+            return {"backend": self.backend_name, "ok": True, "detail": "reachable"}
+        except urllib.error.HTTPError as exc:  # MUST precede URLError — it is a subclass
+            if exc.code in (401, 403):
+                return {"backend": self.backend_name, "ok": False, "detail": "unauthorized"}
+            # Any other HTTP status still means the endpoint answered us — it is reachable.
+            return {"backend": self.backend_name, "ok": True, "detail": "reachable"}
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+            log.warning("groq health probe unreachable: %s", exc)
+            return {"backend": self.backend_name, "ok": False, "detail": "unreachable"}
+        except Exception as exc:  # noqa: BLE001 - health must never raise
+            log.warning("groq health probe error: %s", exc)
+            return {"backend": self.backend_name, "ok": False, "detail": "unreachable"}
 
 
 class LocalReasoner(Reasoner):

@@ -167,6 +167,11 @@ class Brief:
     memory_backend: str = "local"
     llm_backend: str = "local"
     latency_ms: int = 0
+    # True when a configured non-local backend (e.g. groq) produced NO usable output and a
+    # deterministic local fallback synthesized this brief instead. When set, ``llm_backend``
+    # reads "local" — the honest provenance of what actually produced the text (not the
+    # configured backend). Default False so the normal path is unaffected.
+    degraded: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         d = asdict(self)

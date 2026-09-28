@@ -4,6 +4,7 @@ reasoner, requests dispatched through the real router (auth middleware included)
 """
 import dataclasses
 import json
+import logging
 import os
 import tempfile
 import unittest
@@ -191,6 +192,40 @@ class TestProductionForcesDemoClosed(unittest.TestCase):
                     os.environ.pop(k, None)
                 else:
                     os.environ[k] = v
+
+
+class TestOpenDemoWarning(unittest.TestCase):
+    """PRIORITY 2 (#3): bootstrap must log a clear WARNING whenever open demo mode is
+    active (anyone can mint an admin session), and stay silent about it when it's off, so an
+    accidental open deployment is visible in the logs."""
+
+    @staticmethod
+    def _warnings_during_bootstrap(ctx):
+        logger = logging.getLogger("muninn.server")
+        records: list[str] = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record.getMessage())
+
+        cap = _Capture(level=logging.WARNING)
+        logger.addHandler(cap)
+        try:
+            server.bootstrap(ctx)
+        finally:
+            logger.removeHandler(cap)
+        return records
+
+    def test_open_demo_logs_warning(self):
+        ctx, _ = _ctx_router(demo_open=True)
+        warnings = self._warnings_during_bootstrap(ctx)
+        self.assertTrue(any("OPEN DEMO MODE" in w for w in warnings),
+                        f"expected an OPEN DEMO MODE warning, got: {warnings}")
+
+    def test_closed_demo_is_silent(self):
+        ctx, _ = _ctx_router(demo_open=False)
+        warnings = self._warnings_during_bootstrap(ctx)
+        self.assertFalse(any("OPEN DEMO MODE" in w for w in warnings))
 
 
 if __name__ == "__main__":

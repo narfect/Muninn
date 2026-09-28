@@ -141,6 +141,9 @@ class TestSEC2ErrorTextNotLeaked(unittest.TestCase):
 
 
 class TestSEC3SecurityHeaders(unittest.TestCase):
+    _EXPECT_CSP = ("default-src 'self'; object-src 'none'; base-uri 'self'; "
+                   "frame-ancestors 'none'")
+
     def test_responses_carry_hardening_headers(self):
         router = Router([("GET", "/api/ok", lambda r: Response.json({"ok": True}))])
         _, headers, _ = _parse(_roundtrip(
@@ -148,6 +151,20 @@ class TestSEC3SecurityHeaders(unittest.TestCase):
         self.assertEqual(headers.get("x-content-type-options"), "nosniff")
         self.assertEqual(headers.get("x-frame-options"), "DENY")
         self.assertEqual(headers.get("referrer-policy"), "no-referrer")
+        # CSP present on an API JSON response, and never opens script-src to inline.
+        csp = headers.get("content-security-policy", "")
+        self.assertEqual(csp, self._EXPECT_CSP)
+        self.assertNotIn("unsafe-inline", csp)
+
+    def test_static_file_response_carries_csp(self):
+        # A static (non-API) GET goes through the server's static handler, not the router,
+        # so assert the same hardening (CSP included) lands there too.
+        router = Router([("GET", "/api/ok", lambda r: Response.json({"ok": True}))])
+        status, headers, _ = _parse(_roundtrip(
+            router, b"GET /index.html HTTP/1.1\r\nHost: x\r\n\r\n"))
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("content-security-policy"), self._EXPECT_CSP)
+        self.assertEqual(headers.get("x-frame-options"), "DENY")
 
 
 if __name__ == "__main__":

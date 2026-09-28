@@ -41,6 +41,11 @@ class Request:
     current_user: Optional[Any] = None
     token: Optional[str] = None
     token_hash: Optional[str] = None
+    # Remote client IP, set by the server transport (empty in unit tests that build a Request
+    # directly). Used only for per-IP auth rate limiting. NOTE: this is the real socket peer,
+    # NOT X-Forwarded-For — there is no trusted-proxy allowlist, so honouring a client-supplied
+    # forwarding header would let a caller spoof its IP and evade the limit.
+    client_ip: str = ""
 
     def json(self) -> Any:
         """Parse the JSON body; returns {} for an empty body, raises ValueError on bad JSON."""

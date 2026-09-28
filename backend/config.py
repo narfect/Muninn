@@ -133,6 +133,15 @@ class Settings:
     login_lockout_seconds: int = field(
         default_factory=lambda: int(_env("MUNINN_LOGIN_LOCKOUT", "900") or 900)
     )
+    # Per-IP fixed-window rate limits for the public auth endpoints (attempts per minute).
+    # Independent of the per-account failed-login lockout above: this throttles a single
+    # source host regardless of which/how many accounts it targets. Set to 0 to DISABLE.
+    rl_login: int = field(
+        default_factory=lambda: int(_env("MUNINN_RL_LOGIN", "10") or 10)
+    )
+    rl_signup: int = field(
+        default_factory=lambda: int(_env("MUNINN_RL_SIGNUP", "5") or 5)
+    )
 
     # --- local demo conveniences (LOCAL ONLY — must be OFF in any real deployment) ---
     # Autoseed the labeled synthetic dataset on startup when the incidents table is empty,

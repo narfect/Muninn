@@ -32,10 +32,13 @@ class TriageService:
         brief: Brief = self.agent.triage(
             incident, use_memory=use_memory, recalled=recalled, on_token=stream)
 
-        # provenance / honest backend badges
+        # provenance / honest backend badges. The agent already stamped ``llm_backend`` and
+        # ``degraded`` based on what ACTUALLY produced the brief (a local fallback reads
+        # "local", never the configured-but-failed backend) — do NOT re-stamp llm_backend
+        # here or a degraded brief would be mislabeled as e.g. "groq". We only add the
+        # service-level timing + memory badges.
         brief.memory_used = use_memory
         brief.memory_backend = getattr(self.memory, "backend_name", "local")
-        brief.llm_backend = getattr(self.agent.reasoner, "backend_name", "local")
         brief.latency_ms = now_ms() - t0
         if use_memory and not brief.reflection:
             brief.reflection = self.memory.reflect(incident.signature_text())

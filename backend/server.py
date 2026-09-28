@@ -30,6 +30,7 @@ from .db import Repository, init_db
 from .llm import build_reasoner
 from .llm.agent import TriageAgent
 from .memory import build_memory_store
+from .ratelimit import RateLimiter
 from .router import Request, Response, Router
 from .services.auth import AuthService
 from .services.incidents import IncidentService
@@ -55,6 +56,10 @@ class AppContext:
     triage: TriageService
     metrics: MetricsService
     auth: AuthService
+    # Per-IP fixed-window throttles for the public auth endpoints (see backend/ratelimit.py).
+    # Held on the context so each wired app (and each test) gets an isolated limiter.
+    login_limiter: RateLimiter
+    signup_limiter: RateLimiter
 
 
 def build_context(settings: Settings = default_settings) -> AppContext:
@@ -70,7 +75,9 @@ def build_context(settings: Settings = default_settings) -> AppContext:
     auth = AuthService(repo=repo, settings=settings)
     return AppContext(settings=settings, repo=repo, memory=memory, reasoner=reasoner,
                       agent=agent, incidents=incidents, triage=triage, metrics=metrics,
-                      auth=auth)
+                      auth=auth,
+                      login_limiter=RateLimiter(settings.rl_login),
+                      signup_limiter=RateLimiter(settings.rl_signup))
 
 
 def build_router(ctx: AppContext) -> Router:
@@ -99,6 +106,13 @@ def bootstrap(ctx: AppContext) -> None:
     wire the app without these effects and invoke this explicitly when they want them."""
     _maybe_autoseed(ctx)
     if ctx.settings.demo_open:
+        log.warning(
+            "OPEN DEMO MODE is ON (MUNINN_DEMO_OPEN): the login gate is bypassed and anyone "
+            "who can reach this server may mint an ADMIN session via POST /api/auth/demo-login. "
+            "This is for the LOCAL, offline demo ONLY. Any non-local deployment MUST set a real "
+            "MUNINN_SERVER_SECRET (which force-disables open demo) and MUNINN_COOKIE_SECURE=true "
+            "behind HTTPS."
+        )
         ctx.auth.ensure_demo_accounts()
 
 
@@ -134,6 +148,14 @@ def make_handler(router: Router, max_body_bytes: int = 1_048_576):
             "X-Content-Type-Options": "nosniff",
             "X-Frame-Options": "DENY",
             "Referrer-Policy": "no-referrer",
+            # Lock the SPA to same-origin resources. index.html + app.js/auth.js load only
+            # same-origin scripts/styles and carry NO inline <script>/<style> or on* handlers
+            # (dynamic styling goes through the CSSOM, which CSP doesn't gate), so no
+            # 'unsafe-inline' is needed — and it is deliberately never added to script-src.
+            "Content-Security-Policy": (
+                "default-src 'self'; object-src 'none'; base-uri 'self'; "
+                "frame-ancestors 'none'"
+            ),
         }
 
         def _send_security_headers(self) -> None:
@@ -206,6 +228,9 @@ def make_handler(router: Router, max_body_bytes: int = 1_048_576):
                                            code="payload_too_large"))
                 return
             req = Request.build(method, self.path, dict(self.headers), self._read_body())
+            # Real socket peer for per-IP auth rate limiting. NOT X-Forwarded-For: with no
+            # trusted-proxy allowlist, a client-supplied forwarding header could spoof the IP.
+            req.client_ip = self.client_address[0] if self.client_address else ""
             self._write(router.dispatch(req))
 
         def do_GET(self) -> None:
@@ -241,6 +266,8 @@ def run(settings: Settings = default_settings) -> None:
         log.info("shutting down")
     finally:
         httpd.server_close()
+        # Leave the DB compact on a clean shutdown: flush + truncate the WAL.
+        ctx.repo.checkpoint()
 
 
 def main() -> None:
