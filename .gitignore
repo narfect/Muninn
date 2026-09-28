@@ -10,7 +10,8 @@ venv/
 
 # Environment / secrets (never commit real keys)
 .env
-.env.local
+.env.*
+!.env.example
 
 # SQLite database + WAL/journal (runtime state — never commit)
 data/muninn.db
