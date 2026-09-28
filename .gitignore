@@ -36,7 +36,6 @@ data/local_memory_*.json
 !/docs/HINDSIGHT.md
 !/docs/MVP.md
 !/docs/PLAN.md
-!/docs/PRODUCTION_PLAN.md
 !/docs/SRS.md
 !/docs/TEST_PLAN.md
 !/docs/USING_MUNINN.md

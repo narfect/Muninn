@@ -73,7 +73,7 @@ a `muninn_csrf` cookie from the current secret (matching the body `csrf`) → th
 mutation echoing that token succeeds. `auth.js` runs `/api/auth/me` at boot, so the SPA
 self-heals automatically.
 
-## Key behaviors each stub must assert (for Claude Code)
+## Key behaviors each stub must assert
 - **retrieval**: cosine of identical text ≈ 1.0; unrelated ≈ low; fusion weights sum to
   1.0; a `queue` incident recalls its family's `memory` incident as top-1.
 - **resolve → retain**: `memory.count()` increases by 1 after `IncidentService.resolve`;
