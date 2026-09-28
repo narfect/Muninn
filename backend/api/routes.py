@@ -64,8 +64,17 @@ class Routes:
         return resp
 
     def auth_me(self, req: "Request") -> "Response":
-        return Response.json({"user": req.current_user.as_dict(),
-                              "csrf": self.ctx.auth.csrf_token(req.token_hash)})
+        csrf = self.ctx.auth.csrf_token(req.token_hash)
+        resp = Response.json({"user": req.current_user.as_dict(), "csrf": csrf})
+        # Re-issue the JS-readable CSRF cookie on every boot-gate check so the SPA always
+        # holds a token derived from the CURRENT server secret. Without this, a session
+        # minted under one MUNINN_SERVER_SECRET keeps a stale muninn_csrf cookie after the
+        # secret rotates (e.g. a restart with the ephemeral default), and the double-submit
+        # token stops matching csrf_token(token_hash) — every mutating request then 403s
+        # even though the session itself still authenticates. This self-heals on the next
+        # GET /api/auth/me (which auth.js runs at boot).
+        resp.cookies = [self.ctx.auth.csrf_cookie(csrf)]
+        return resp
 
     # --- users (admin) ----------------------------------------------------
     def list_users(self, req: "Request") -> "Response":

@@ -72,6 +72,7 @@ const state = {
   brief: null,
   recall: null,
   health: null,
+  queueFilter: { q: "", severity: "", service: "" },  // client-side queue narrowing
 };
 
 /* ---- tiny helpers --------------------------------------------------------- */
@@ -80,7 +81,9 @@ const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls)
 let _toastTimer = null;
 function toast(msg) {
   const t = $("#toast"); t.textContent = msg; t.hidden = false;
-  clearTimeout(_toastTimer); _toastTimer = setTimeout(() => (t.hidden = true), 3200);
+  // Give longer messages more reading time (~200 wpm), clamped to a sane window.
+  const ms = Math.min(8000, Math.max(3200, msg.length * 55));
+  clearTimeout(_toastTimer); _toastTimer = setTimeout(() => (t.hidden = true), ms);
 }
 const sevNum = (sev) => ({ SEV1: 1, SEV2: 2, SEV3: 3 }[sev] || 3);
 const pct = (x) => `${Math.round((Number(x) || 0) * 100)}%`;
@@ -135,9 +138,13 @@ function router() {
 }
 
 /* ---- render functions ----------------------------------------------------- */
-// renderQueue(): GET /api/incidents -> fill #queue with .q-row rows; click selects.
+// renderQueue(): GET /api/incidents -> toolbar (search + severity/service facets)
+// over a listbox of dense incident rows. The toolbar persists across data refreshes;
+// typing/filtering only re-renders the row list (renderQueueList), so focus is kept.
 async function renderQueue() {
   const box = $("#queue");
+  clear(box);
+  box.appendChild(el("p", "q-empty", "Loading incidents…"));  // honest loading state
   try {
     const data = await api.get("/api/incidents");
     state.incidents = data.incidents || [];
@@ -149,14 +156,84 @@ async function renderQueue() {
     box.appendChild(el("p", "q-empty", "No incidents yet — seed the demo dataset."));
     return;
   }
-  // open incidents first, then most-recent
-  const rows = [...state.incidents].sort((a, b) =>
+  box.appendChild(buildQueueToolbar());
+  const list = el("div", "q-list"); list.id = "queue-list";
+  list.setAttribute("role", "listbox");
+  list.setAttribute("aria-label", "Incidents");
+  box.appendChild(list);
+  renderQueueList();
+}
+
+// Search box + severity/service facets. Values are seeded from state.queueFilter so a
+// data refresh (seed/resolve) doesn't drop the user's narrowing.
+function buildQueueToolbar() {
+  const bar = el("div", "q-toolbar");
+  const f = state.queueFilter;
+
+  const search = el("input", "field q-search");
+  search.type = "search"; search.id = "q-search";
+  search.placeholder = "Search incidents…";
+  search.setAttribute("aria-label", "Search incidents");
+  search.value = f.q;
+  search.addEventListener("input", () => { f.q = search.value; renderQueueList(); });
+  bar.appendChild(search);
+
+  const facets = el("div", "q-facets");
+  const sevSel = el("select", "field q-facet");
+  sevSel.setAttribute("aria-label", "Filter by severity");
+  [["", "All severities"], ["SEV1", "SEV1"], ["SEV2", "SEV2"], ["SEV3", "SEV3"]]
+    .forEach(([v, t]) => { const o = el("option", null, t); o.value = v; sevSel.appendChild(o); });
+  sevSel.value = f.severity;
+  sevSel.addEventListener("change", () => { f.severity = sevSel.value; renderQueueList(); });
+  facets.appendChild(sevSel);
+
+  const svcSel = el("select", "field q-facet");
+  svcSel.setAttribute("aria-label", "Filter by service");
+  const allOpt = el("option", null, "All services"); allOpt.value = "";
+  svcSel.appendChild(allOpt);
+  const services = [...new Set(state.incidents.map((i) => i.service).filter(Boolean))].sort();
+  services.forEach((s) => { const o = el("option", null, s); o.value = s; svcSel.appendChild(o); });
+  if (!services.includes(f.service)) f.service = "";
+  svcSel.value = f.service;
+  svcSel.addEventListener("change", () => { f.service = svcSel.value; renderQueueList(); });
+  facets.appendChild(svcSel);
+
+  bar.appendChild(facets);
+  return bar;
+}
+
+function _filteredIncidents() {
+  const f = state.queueFilter;
+  const q = f.q.trim().toLowerCase();
+  return state.incidents.filter((inc) => {
+    if (f.severity && inc.severity !== f.severity) return false;
+    if (f.service && inc.service !== f.service) return false;
+    if (q) {
+      const hay = `${inc.title} ${inc.service} ${inc.external_id} ${inc.symptom || ""} ${(inc.tags || []).join(" ")}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+// Rows only — the toolbar stays put. Listbox with roving tabindex + arrow-key nav.
+function renderQueueList() {
+  const list = $("#queue-list");
+  if (!list) return;
+  clear(list);
+  const rows = _filteredIncidents().sort((a, b) =>   // open first, then most-recent
     (a.status === "resolved") - (b.status === "resolved") || b.created_at - a.created_at);
-  for (const inc of rows) {
+  if (!rows.length) {
+    list.appendChild(el("p", "q-empty", "No incidents match your filters."));
+    return;
+  }
+  // roving tabindex target: the selected row if visible, else the first row
+  const activeId = rows.some((r) => r.id === state.selectedId) ? state.selectedId : rows[0].id;
+  rows.forEach((inc) => {
     const row = el("div", "q-row");
-    row.setAttribute("role", "button");
-    row.setAttribute("tabindex", "0");
+    row.setAttribute("role", "option");
     row.setAttribute("aria-selected", String(inc.id === state.selectedId));
+    row.tabIndex = (inc.id === activeId) ? 0 : -1;
     row.dataset.id = inc.id;
     row.appendChild(el("span", `q-sev sev-${sevNum(inc.severity)}`));
     const mid = el("div", "q-mid");
@@ -167,18 +244,39 @@ async function renderQueue() {
     right.appendChild(el("div", "q-age", ago(inc.created_at)));
     if (inc.status === "resolved") right.appendChild(el("span", "q-badge resolved", "resolved"));
     row.appendChild(right);
-    const pick = () => selectIncident(inc.id);
-    row.addEventListener("click", pick);
-    row.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
-    box.appendChild(row);
-  }
+    row.addEventListener("click", () => selectIncident(inc.id));
+    row.addEventListener("keydown", _queueKeydown);
+    list.appendChild(row);
+  });
+}
+
+// Listbox keyboard model: Up/Down/Home/End move focus (roving tabindex), Enter/Space
+// selects the focused row.
+function _queueKeydown(e) {
+  const row = e.currentTarget;
+  const items = Array.prototype.slice.call(row.parentNode.querySelectorAll(".q-row"));
+  const i = items.indexOf(row);
+  let next = -1;
+  if (e.key === "ArrowDown") next = Math.min(items.length - 1, i + 1);
+  else if (e.key === "ArrowUp") next = Math.max(0, i - 1);
+  else if (e.key === "Home") next = 0;
+  else if (e.key === "End") next = items.length - 1;
+  else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectIncident(Number(row.dataset.id)); return; }
+  else return;
+  e.preventDefault();
+  if (next < 0 || next === i) return;
+  items.forEach((n, k) => { n.tabIndex = k === next ? 0 : -1; });
+  items[next].focus();
 }
 
 async function selectIncident(id) {
   state.selectedId = id;
   state.brief = null; state.recall = null;
-  document.querySelectorAll(".q-row").forEach((r) =>
-    r.setAttribute("aria-selected", String(Number(r.dataset.id) === id)));
+  document.querySelectorAll(".q-row").forEach((r) => {
+    const on = Number(r.dataset.id) === id;
+    r.setAttribute("aria-selected", String(on));
+    r.tabIndex = on ? 0 : -1;
+  });
   await renderActive();
   renderRecall(null);
 }
@@ -259,14 +357,74 @@ async function renderActive() {
   }
 }
 
-// runTriage(): POST /api/triage {incident_id, use_memory} -> renderBrief + renderRecall.
-async function runTriage() {
+// The exact recall query the backend builds (Incident.signature_text). Keeping the
+// client in lockstep means the recall pane shows the SAME memories the warm brief
+// cited, so citation chips (id == memory.source) always resolve to a visible row (S11).
+function signatureText(inc) {
+  if (!inc) return "";
+  const tags = (inc.tags || []).join(", ");
+  return `${inc.service}: ${inc.symptom} (${inc.error_signature || ""}). ${inc.title}. tags: ${tags}`;
+}
+
+// runTriage(): stream GET /api/triage/stream token-by-token for a live "thinking"
+// reveal, then render the structured brief on `done`. Falls back to POST /api/triage
+// when EventSource is unavailable or the stream errors before completing — so the demo
+// never breaks. Only responders reach here (the button is role-gated), and EventSource
+// sends the same-origin session cookie automatically (GET needs no CSRF header).
+function runTriage() {
   if (!state.selectedId) return;
   const mount = $("#brief-mount");
-  if (mount) { clear(mount); mount.appendChild(el("p", "thinking", "Muninn is thinking…")); }
+  if (!mount) return;
+  const useMem = state.useMemory;
+  clear(mount);
+  mount.appendChild(el("p", "thinking", "Muninn is thinking…"));
+  if (window.EventSource) _streamTriage(useMem, mount);
+  else postTriage(useMem, mount);
+}
+
+function _streamTriage(useMem, mount) {
+  let settled = false;
+  let buf = "";
+  const live = el("pre", "stream-live");
+  live.setAttribute("aria-live", "polite");
+  const url = `/api/triage/stream?incident_id=${encodeURIComponent(state.selectedId)}` +
+    `&use_memory=${useMem ? "true" : "false"}`;
+  api.stream(url, {
+    onToken(t) {
+      if (settled) return;
+      if (!live.isConnected) { clear(mount); mount.appendChild(live); }
+      buf += t;
+      live.textContent = buf;
+    },
+    onDone(brief) {
+      if (settled) return;
+      settled = true;
+      if (!brief) { postTriage(useMem, mount); return; }  // malformed frame -> re-run
+      state.brief = brief;
+      renderBrief(brief);
+      if (useMem && state.active) {
+        api.post("/api/memory/recall", { query: signatureText(state.active), top_k: 5 })
+          .then((rc) => { state.recall = rc; renderRecall(rc); })
+          .catch(() => renderRecall(null));
+      } else {
+        state.recall = null;
+        renderRecall(null);
+      }
+    },
+    onError() {
+      if (settled) return;
+      settled = true;
+      postTriage(useMem, mount);  // stream never completed -> plain request
+    },
+  });
+}
+
+// Non-streaming path: one POST returns brief AND the recall from the same run, so
+// citations and recall rows are inherently aligned.
+async function postTriage(useMem, mount) {
   try {
     const out = await api.post("/api/triage",
-      { incident_id: state.selectedId, use_memory: state.useMemory });
+      { incident_id: state.selectedId, use_memory: useMem });
     state.brief = out.brief; state.recall = out.recall;
     renderBrief(out.brief);
     renderRecall(out.recall);
@@ -385,9 +543,11 @@ async function renderCompare() {
     mount.appendChild(split);
     renderBrief(out.cold, "#cmp-cold");
     renderBrief(out.warm, "#cmp-warm");
-    // recall pane reflects the warm run
+    // Recall pane reflects the warm run. Query with the SAME signature_text the backend
+    // recalls on, so the warm brief's citations (id == memory.source) line up with the
+    // rows shown here and clicking a chip highlights a visible memory (S11).
     const rc = await api.post("/api/memory/recall",
-      { query: state.active ? `${state.active.service}: ${state.active.symptom}` : "", top_k: 5 })
+      { query: signatureText(state.active), top_k: 5 })
       .catch(() => null);
     renderRecall(rc);
   } catch (e) {
@@ -398,10 +558,19 @@ async function renderCompare() {
 function renderResolveForm(inc) {
   const form = el("form", "resolve-form");
   form.appendChild(el("h3", null, "Resolve & remember"));
-  const rc = el("input"); rc.name = "root_cause"; rc.placeholder = "Root cause"; rc.required = true;
-  const steps = el("input"); steps.name = "steps"; steps.placeholder = "Remediation steps (comma-separated)";
-  const who = el("input"); who.name = "resolver"; who.placeholder = "Resolver";
-  [rc, steps, who].forEach((i) => { i.className = "field"; form.appendChild(i); });
+  const field = (id, labelText, ph, required) => {
+    const row = el("div", "form-row");
+    const label = el("label", null, labelText); label.htmlFor = id;
+    const input = el("input", "field");
+    input.id = id; input.name = id; input.placeholder = ph;
+    if (required) input.required = true;
+    row.appendChild(label); row.appendChild(input);
+    form.appendChild(row);
+    return input;
+  };
+  const rc = field("resolve-root-cause", "Root cause", "e.g. connection pool exhausted", true);
+  const steps = field("resolve-steps", "Remediation steps", "comma-separated", false);
+  const who = field("resolve-resolver", "Resolver", "e.g. oncall", false);
   const submit = el("button", "btn", "Resolve & retain to memory");
   submit.type = "submit";
   form.appendChild(submit);
@@ -459,19 +628,25 @@ async function renderInsights() {
   host.appendChild(stats);
 
   const grid = el("div", "chart-grid");
+  const byService = (s.mttr && s.mttr.by_service) || {};
+  const series = s.learning_curve || [];
+
   const mttrCard = el("div", "chart-card");
   mttrCard.appendChild(el("h3", null, "MTTR by service (min)"));
-  const c1 = el("canvas"); c1.width = 520; c1.height = 260; mttrCard.appendChild(c1);
+  const c1 = el("canvas"); mttrCard.appendChild(c1);
+  mttrCard.appendChild(_mttrTable(byService));   // sr-only tabular fallback
   grid.appendChild(mttrCard);
 
   const lcCard = el("div", "chart-card");
   lcCard.appendChild(el("h3", null, "Learning curve — recall quality as memory grows"));
-  const c2 = el("canvas"); c2.width = 520; c2.height = 260; lcCard.appendChild(c2);
+  const c2 = el("canvas"); lcCard.appendChild(c2);
+  lcCard.appendChild(_lcTable(series));
   grid.appendChild(lcCard);
   host.appendChild(grid);
 
-  drawBarChart(c1, (s.mttr && s.mttr.by_service) || {});
-  drawLearningCurve(c2, s.learning_curve || []);
+  // canvases must be laid out (in the DOM, view visible) before we size to clientWidth
+  drawBarChart(c1, byService);
+  drawLearningCurve(c2, series);
 }
 
 // seedDemo(): POST /api/demo/seed -> reload queue + health. resetDemo(): POST /api/demo/reset.
@@ -487,11 +662,58 @@ async function seedDemo() {
 /* ---- canvas charts (no chart lib) ----------------------------------------- */
 const CHART = { ink: "#E7ECF4", muted: "#8DA0BC", line: "#27344A", warm: "#8B7BF6", cold: "#57C3D8" };
 
-function drawBarChart(canvas, byService) {
+// Size the backing store to devicePixelRatio so charts stay crisp on HiDPI displays,
+// then scale the context so drawing code works in CSS pixels. Returns logical W/H.
+function hidpiCtx(canvas) {
+  const cssW = canvas.clientWidth || 520;
+  const cssH = Math.round(cssW * 0.5);   // 2:1 aspect
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  canvas.style.height = cssH + "px";     // CSS width:100% governs display width
   const ctx = canvas.getContext("2d");
-  const W = canvas.width, H = canvas.height, pad = 34;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, W: cssW, H: cssH };
+}
+
+// Screen-reader tabular fallbacks for the canvases (visually hidden via .sr-only).
+function _srTable(caption, headers, rows) {
+  const wrap = el("div", "sr-only");
+  const table = el("table");
+  table.appendChild(el("caption", null, caption));
+  const htr = el("tr");
+  headers.forEach((h) => { const th = el("th", null, h); th.scope = "col"; htr.appendChild(th); });
+  const thead = el("thead"); thead.appendChild(htr); table.appendChild(thead);
+  const tbody = el("tbody");
+  rows.forEach((r) => {
+    const tr = el("tr");
+    r.forEach((cell) => tr.appendChild(el("td", null, String(cell))));
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody); wrap.appendChild(table);
+  return wrap;
+}
+function _mttrTable(byService) {
+  const rows = Object.entries(byService).sort((a, b) => b[1] - a[1]).map(([svc, v]) => [svc, v]);
+  return _srTable("MTTR by service (minutes)", ["Service", "MTTR (min)"],
+    rows.length ? rows : [["No data yet", "—"]]);
+}
+function _lcTable(series) {
+  const rows = series.map((p, i) => [i + 1, p.n_memories, pct(p.avg_top_score), pct(p.coverage)]);
+  return _srTable("Learning curve — recall quality as memory grows",
+    ["Step", "Memories", "Top match", "Coverage"],
+    rows.length ? rows : [["—", "—", "—", "—"]]);
+}
+
+function drawBarChart(canvas, byService) {
+  const { ctx, W, H } = hidpiCtx(canvas);
+  const pad = 34;
   ctx.clearRect(0, 0, W, H);
   const entries = Object.entries(byService).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  canvas.setAttribute("role", "img");
+  canvas.setAttribute("aria-label", entries.length
+    ? "Bar chart, MTTR by service in minutes: " + entries.map(([k, v]) => `${k} ${v}`).join(", ")
+    : "Bar chart, MTTR by service: no data yet.");
   if (!entries.length) { _emptyChart(ctx, W, H); return; }
   const max = Math.max(...entries.map((e) => e[1]), 1);
   const bw = (W - pad * 2) / entries.length;
@@ -509,10 +731,18 @@ function drawBarChart(canvas, byService) {
 }
 
 function drawLearningCurve(canvas, series) {
-  const ctx = canvas.getContext("2d");
-  const W = canvas.width, H = canvas.height, pad = 34;
+  const { ctx, W, H } = hidpiCtx(canvas);
+  const pad = 34;
   ctx.clearRect(0, 0, W, H);
-  if (!series.length) { _emptyChart(ctx, W, H); return; }
+  canvas.setAttribute("role", "img");
+  if (!series.length) {
+    canvas.setAttribute("aria-label", "Line chart, learning curve: no data yet.");
+    _emptyChart(ctx, W, H); return;
+  }
+  const last = series[series.length - 1];
+  canvas.setAttribute("aria-label",
+    `Line chart of recall quality as memory grows over ${series.length} incidents. ` +
+    `Final top-match score ${pct(last.avg_top_score)}, cumulative coverage ${pct(last.coverage)}.`);
   // axes
   ctx.strokeStyle = CHART.line; ctx.beginPath();
   ctx.moveTo(pad, pad); ctx.lineTo(pad, H - pad); ctx.lineTo(W - pad, H - pad); ctx.stroke();
@@ -546,19 +776,79 @@ function _emptyChart(ctx, W, H) {
 }
 
 /* ---- new-incident form ---------------------------------------------------- */
-async function newIncident() {
-  const title = prompt("Incident title?");
-  if (!title) return;
-  const service = prompt("Service?", "checkout-api");
-  if (!service) return;
-  const severity = (prompt("Severity (SEV1/SEV2/SEV3)?", "SEV1") || "SEV1").toUpperCase();
-  const symptom = prompt("Symptom?", title) || title;
-  try {
-    const r = await api.post("/api/incidents", { title, service, severity, symptom });
-    toast(`Created ${r.incident.external_id}.`);
-    await renderQueue();
-    selectIncident(r.incident.id);
-  } catch (e) { toast(`Create failed: ${e.message}`); }
+// Inline labeled form in the active pane — replaces the old window.prompt chain
+// (which is unlabelled, unstyled, and blocks the thread).
+function newIncident() {
+  const host = $("#active");
+  if (!host) return;
+  host.className = "active";
+  clear(host);
+  const form = el("form", "inline-form");
+  form.setAttribute("aria-label", "New incident");
+  form.appendChild(el("h2", null, "New incident"));
+
+  const field = (id, labelText, ph, required) => {
+    const row = el("div", "form-row");
+    const label = el("label", null, labelText); label.htmlFor = id;
+    const input = el("input", "field");
+    input.id = id; input.name = id; input.placeholder = ph || "";
+    if (required) input.required = true;
+    row.appendChild(label); row.appendChild(input);
+    form.appendChild(row);
+    return input;
+  };
+  const title = field("ni-title", "Title", "e.g. Checkout latency spike", true);
+  const service = field("ni-service", "Service", "e.g. checkout-api", true);
+  service.value = "checkout-api";
+
+  const sevRow = el("div", "form-row");
+  const sevLabel = el("label", null, "Severity"); sevLabel.htmlFor = "ni-severity";
+  const sev = el("select", "field"); sev.id = "ni-severity"; sev.name = "ni-severity";
+  ["SEV1", "SEV2", "SEV3"].forEach((v) => { const o = el("option", null, v); o.value = v; sev.appendChild(o); });
+  sevRow.appendChild(sevLabel); sevRow.appendChild(sev); form.appendChild(sevRow);
+
+  const symptom = field("ni-symptom", "Symptom", "what's observed", false);
+
+  const actions = el("div", "form-actions");
+  const submit = el("button", "btn", "Create incident"); submit.type = "submit";
+  const cancel = el("button", "btn btn-ghost", "Cancel"); cancel.type = "button";
+  cancel.addEventListener("click", () => state.selectedId ? renderActive() : renderEmptyActive());
+  actions.appendChild(submit); actions.appendChild(cancel);
+  form.appendChild(actions);
+  // __NI_SUBMIT__
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const t = title.value.trim(), svc = service.value.trim();
+    if (!t || !svc) { toast("Title and service are required."); return; }
+    submit.disabled = true; submit.textContent = "Creating…";
+    try {
+      const r = await api.post("/api/incidents",
+        { title: t, service: svc, severity: sev.value, symptom: symptom.value.trim() || t });
+      toast(`Created ${r.incident.external_id}.`);
+      await renderQueue();
+      selectIncident(r.incident.id);
+    } catch (err) {
+      toast(`Create failed: ${err.message}`);
+      submit.disabled = false; submit.textContent = "Create incident";
+    }
+  });
+  host.appendChild(form);
+  title.focus();
+}
+
+// Restore the "memory is empty" invitation in the active pane (used on cancel).
+function renderEmptyActive() {
+  const host = $("#active");
+  if (!host) return;
+  host.className = "active-empty";
+  clear(host);
+  host.appendChild(el("p", "empty-title", "Muninn's memory is empty."));
+  host.appendChild(el("p", "empty-sub", "Seed the demo dataset to watch it recall past outages."));
+  if (window.Auth && Auth.can("seed")) {
+    const b = el("button", "btn", "Seed demo data");
+    b.addEventListener("click", seedDemo);
+    host.appendChild(b);
+  }
 }
 
 /* ---- users view (admin-only role management) ------------------------------ */
@@ -588,6 +878,7 @@ async function renderUsers() {
     tr.appendChild(el("td", null, u.name || "—"));
     tr.appendChild(el("td", "mono", u.email));
     const sel = el("select", "field role-select");
+    sel.setAttribute("aria-label", `Role for ${u.email}`);
     ["viewer", "responder", "admin"].forEach((r) => {
       const opt = el("option", null, r); opt.value = r;
       if (u.role === r) opt.selected = true; sel.appendChild(opt);

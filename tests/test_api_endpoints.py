@@ -137,5 +137,53 @@ class TestApiStreaming(unittest.TestCase):
         self.assertIn("event: done", frames)
 
 
+class TestCsrfSelfHeal(unittest.TestCase):
+    """Regression: a session minted under one server secret must keep working for mutating
+    requests after the secret rotates (e.g. a restart with the ephemeral default). The boot
+    gate's GET /api/auth/me re-issues the muninn_csrf cookie from the CURRENT secret, so the
+    double-submit token re-syncs instead of 403-ing every mutation forever."""
+
+    @staticmethod
+    def _csrf_cookie(resp):
+        for c in resp.cookies:
+            name, _, rest = c.partition("=")
+            if name == "muninn_csrf":
+                return rest.split(";", 1)[0]
+        return None
+
+    def test_me_reissues_csrf_after_secret_rotation(self):
+        ctx, router = _app()
+        _req(router, "POST", "/api/demo/seed")
+        session_cookie = router._auth_headers["Cookie"]
+
+        # Rotate the server secret out from under the live session (simulates a restart
+        # with a fresh ephemeral MUNINN_SERVER_SECRET). The session still authenticates
+        # (DB-backed), but the stale csrf token no longer matches.
+        ctx.auth.settings = dataclasses.replace(ctx.auth.settings,
+                                                server_secret="rotated-secret-xyz")
+
+        # Bug repro: the stale double-submit token now fails CSRF.
+        stale, _ = _req(router, "POST", "/api/memory/recall", {"query": "x", "top_k": 1})
+        self.assertEqual(stale.status, 403)
+
+        # Boot gate re-syncs: /api/auth/me returns the current token AND re-sets the cookie.
+        me = router.dispatch(Request.build(
+            "GET", "/api/auth/me",
+            {"Cookie": session_cookie, "Origin": "http://127.0.0.1", "Host": "127.0.0.1"}, b""))
+        self.assertEqual(me.status, 200)
+        cookie_csrf = self._csrf_cookie(me)
+        body_csrf = json.loads(me.body.decode("utf-8"))["csrf"]
+        self.assertIsNotNone(cookie_csrf)
+        self.assertEqual(cookie_csrf, body_csrf)
+
+        # Self-healed: a mutating request echoing the refreshed token passes.
+        healed = router.dispatch(Request.build(
+            "POST", "/api/memory/recall",
+            {"Cookie": session_cookie, "X-CSRF-Token": cookie_csrf,
+             "Origin": "http://127.0.0.1", "Host": "127.0.0.1"},
+            json.dumps({"query": "checkout 5xx", "top_k": 1}).encode("utf-8")))
+        self.assertEqual(healed.status, 200)
+
+
 if __name__ == "__main__":
     unittest.main()
