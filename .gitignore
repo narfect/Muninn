@@ -27,8 +27,8 @@ data/muninn.db-*
 data/memory_local.json
 data/local_memory_*.json
 
-# Claude Code machine-local settings (permission grants)
-.claude/settings.local.json
+# Claude Code machine-local settings
+/.claude/
 
 # Project documentation and generated content
 /docs/*
