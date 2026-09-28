@@ -31,7 +31,10 @@ data/local_memory_*.json
 .claude/settings.local.json
 
 # Project documentation and generated content
-/docs/
+/docs/*
+!/docs/ARCHITECTURE.md
+!/docs/TEST_PLAN.md
+!/docs/USING_MUNINN.md
 /content/
 /CLAUDE.md
 

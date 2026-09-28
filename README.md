@@ -189,8 +189,5 @@ implemented:
 Everything runs under the original constraints: Python standard library only, dependency-free
 vanilla-JS frontend, offline-first, no fabricated data (backends degrade to labeled offline
 fallbacks), and a green `unittest` suite. All incident data is **synthetic** and labeled as
-such. The phased build history is captured in
-[`docs/CLAUDE_CODE_PROMPTS.md`](docs/CLAUDE_CODE_PROMPTS.md) and
-[`docs/PRODUCTION_PLAN.md`](docs/PRODUCTION_PLAN.md); remaining ideas live in the
-"future / out-of-scope" list there.
+such. 
 
