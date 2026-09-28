@@ -331,7 +331,9 @@ async function renderActive() {
     cmp.addEventListener("click", renderCompare);
     actions.appendChild(cmp);
   } else {
-    actions.appendChild(el("span", "role-note", "Read-only — responders can run triage."));
+    // Read-only analysis (triage/compare) is a viewer capability now, so any signed-in
+    // account reaches the buttons above; this only shows if the session lapsed.
+    actions.appendChild(el("span", "role-note", "Sign in to run triage."));
   }
   host.appendChild(actions);
 
@@ -634,12 +636,17 @@ async function renderInsights() {
   const mttrCard = el("div", "chart-card");
   mttrCard.appendChild(el("h3", null, "MTTR by service (min)"));
   const c1 = el("canvas"); mttrCard.appendChild(c1);
+  mttrCard.appendChild(_chartLegend([{ label: "MTTR (min)", color: CHART.warm }]));
   mttrCard.appendChild(_mttrTable(byService));   // sr-only tabular fallback
   grid.appendChild(mttrCard);
 
   const lcCard = el("div", "chart-card");
   lcCard.appendChild(el("h3", null, "Learning curve — recall quality as memory grows"));
   const c2 = el("canvas"); lcCard.appendChild(c2);
+  lcCard.appendChild(_chartLegend([
+    { label: "Top match score", color: CHART.warm },
+    { label: "Cumulative coverage", color: CHART.cold },
+  ]));
   lcCard.appendChild(_lcTable(series));
   grid.appendChild(lcCard);
   host.appendChild(grid);
@@ -655,6 +662,7 @@ async function seedDemo() {
     const r = await api.post("/api/demo/seed");
     toast(`Seeded ${r.seeded.incidents} synthetic incidents.`);
     await renderQueue();
+    if (!state.selectedId) renderEmptyActive();   // refresh the "select an incident" state
     bootHealth();
   } catch (e) { toast(`Seed failed: ${e.message}`); }
 }
@@ -709,6 +717,7 @@ function drawBarChart(canvas, byService) {
   const { ctx, W, H } = hidpiCtx(canvas);
   const pad = 34;
   ctx.clearRect(0, 0, W, H);
+  ctx.textBaseline = "alphabetic";   // explicit: labels sit on their baselines
   const entries = Object.entries(byService).sort((a, b) => b[1] - a[1]).slice(0, 8);
   canvas.setAttribute("role", "img");
   canvas.setAttribute("aria-label", entries.length
@@ -764,15 +773,29 @@ function drawLearningCurve(canvas, series) {
   };
   plot("coverage", CHART.cold);
   plot("avg_top_score", CHART.warm);
-  // legend
-  ctx.font = "11px ui-monospace, monospace"; ctx.textAlign = "left";
-  ctx.fillStyle = CHART.warm; ctx.fillText("● top match score", pad + 6, pad + 4);
-  ctx.fillStyle = CHART.cold; ctx.fillText("● cumulative coverage", pad + 6, pad + 18);
+  // Legend lives OUTSIDE the plot as DOM chips beneath the canvas (see _chartLegend in
+  // renderInsights) so it never paints over the lines at narrow widths / high DPR.
 }
 
 function _emptyChart(ctx, W, H) {
-  ctx.fillStyle = CHART.muted; ctx.font = "13px system-ui"; ctx.textAlign = "center";
+  ctx.fillStyle = CHART.muted; ctx.font = "13px system-ui";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";   // explicit: message centered in the box
   ctx.fillText("Seed the demo dataset to populate metrics.", W / 2, H / 2);
+}
+
+// Chart legend as DOM chips (kept OUT of the canvas plot). Decorative color key only:
+// the canvas aria-label + the .sr-only data table carry the numbers for assistive tech.
+function _chartLegend(items) {
+  const wrap = el("div", "chart-legend");
+  wrap.setAttribute("aria-hidden", "true");
+  items.forEach(({ label, color }) => {
+    const item = el("span", "legend-item");
+    const dot = el("span", "legend-dot"); dot.style.background = color;
+    item.appendChild(dot);
+    item.appendChild(el("span", "legend-label", label));
+    wrap.appendChild(item);
+  });
+  return wrap;
 }
 
 /* ---- new-incident form ---------------------------------------------------- */
@@ -836,18 +859,30 @@ function newIncident() {
   title.focus();
 }
 
-// Restore the "memory is empty" invitation in the active pane (used on cancel).
+// Empty active-pane state. Role-, demo-, and data-aware: when incidents exist it invites
+// selection; when the store is truly empty it only offers/mentions seeding in the way the
+// current role allows (never tell a viewer to seed a control they can't reach).
 function renderEmptyActive() {
   const host = $("#active");
   if (!host) return;
   host.className = "active-empty";
   clear(host);
+  const A = window.Auth || { can: () => false };
+  if ((state.incidents || []).length) {
+    host.appendChild(el("p", "empty-title", "Select an incident."));
+    host.appendChild(el("p", "empty-sub",
+      "Pick one from the queue to see its triage brief and the memories Muninn recalls."));
+    return;
+  }
   host.appendChild(el("p", "empty-title", "Muninn's memory is empty."));
-  host.appendChild(el("p", "empty-sub", "Seed the demo dataset to watch it recall past outages."));
-  if (window.Auth && Auth.can("seed")) {
+  if (A.can("seed")) {
+    host.appendChild(el("p", "empty-sub", "Seed the demo dataset to watch it recall past outages."));
     const b = el("button", "btn", "Seed demo data");
     b.addEventListener("click", seedDemo);
     host.appendChild(b);
+  } else {
+    host.appendChild(el("p", "empty-sub",
+      "No incidents yet — an admin can seed the synthetic demo dataset to get things started."));
   }
 }
 
@@ -932,28 +967,79 @@ function applyRoleGating() {
   const canSeed = A.can("seed");     // demo/seed + demo/reset = admin
   const canMutate = A.can("mutate"); // create incident = responder
   const canUsers = A.can("users");   // user administration = admin
-  ["btn-seed", "btn-seed-2"].forEach((id) => { const b = document.getElementById(id); if (b) b.hidden = !canSeed; });
+  const sb = document.getElementById("btn-seed"); if (sb) sb.hidden = !canSeed;
   const nb = $("#btn-new"); if (nb) nb.hidden = !canMutate;
   const nu = $("#nav-users"); if (nu) nu.hidden = !canUsers;
+}
+
+/* ---- open-demo mode: labeled role switcher in the status bar -------------- */
+// Shown ONLY while the server has open-demo mode on AND the live session is a demo
+// account (Auth.isDemo()). Real logins never see it. Every view still runs the REAL
+// pipeline — recall, brief, metrics — only the seeded dataset is synthetic.
+function renderDemoBar(user) {
+  const bar = $("#demo-bar");
+  if (!bar) return;
+  clear(bar);
+  if (!(window.Auth && Auth.isDemo())) { bar.hidden = true; return; }
+  bar.hidden = false;
+  bar.appendChild(el("span", "demo-label", "Demo mode — no login needed. Viewing as:"));
+  const roles = el("div", "demo-roles");
+  roles.setAttribute("role", "group");
+  roles.setAttribute("aria-label", "Demo role");
+  const current = (user && user.role) || "";
+  Auth.demoRoles().forEach((role) => {
+    const label = role.charAt(0).toUpperCase() + role.slice(1);
+    const b = el("button", "demo-role", label);
+    b.type = "button"; b.dataset.role = role;
+    const on = role === current;
+    b.classList.toggle("is-active", on);
+    b.setAttribute("aria-pressed", String(on));
+    b.disabled = on;   // already viewing as this role
+    b.addEventListener("click", () => switchDemoRole(role));
+    roles.appendChild(b);
+  });
+  bar.appendChild(roles);
+  const login = el("button", "demo-login-link", "Log in");
+  login.type = "button";
+  login.addEventListener("click", () => Auth.openLogin());
+  bar.appendChild(login);
+}
+
+// Mint a fresh REAL session for the chosen demo role (server-side) and re-boot the UI so
+// RBAC gating, the queue, and the active pane all reflect the new capabilities. Selection
+// is reset so no stale, now-forbidden control lingers.
+async function switchDemoRole(role) {
+  try {
+    const user = await Auth.demoLogin(role);
+    state.selectedId = null; state.brief = null; state.recall = null;
+    toast(`Now viewing as ${role}.`);
+    renderRecall(null);
+    boot(user);
+  } catch (e) {
+    toast(`Could not switch role: ${e.message}`);
+  }
 }
 
 /* ---- wire + boot ---------------------------------------------------------- */
 let _wired = false;
 function wire() {
   if (_wired) return; _wired = true;
-  ["btn-seed", "btn-seed-2"].forEach((id) => { const b = document.getElementById(id); if (b) b.addEventListener("click", seedDemo); });
+  const sb = document.getElementById("btn-seed"); if (sb) sb.addEventListener("click", seedDemo);
   const nb = $("#btn-new"); if (nb) nb.addEventListener("click", newIncident);
   window.addEventListener("hashchange", router);
 }
 
-// Boot callback — runs only AFTER Auth.require() confirms a live session, so no
-// app-data request ever fires while unauthenticated.
-function boot(user) {
+// Boot callback — runs only AFTER Auth.require() confirms a live session (real OR open-demo),
+// so no app-data request ever fires while unauthenticated. Also re-invoked on a demo role
+// switch to re-render everything under the new capabilities.
+async function boot(user) {
   renderUserChip(user);
+  renderDemoBar(user);
   applyRoleGating();
   router();
   bootHealth();
-  renderQueue();
+  await renderQueue();
+  if (!state.selectedId) renderEmptyActive();   // role/demo/data-aware active pane
 }
 
 document.addEventListener("DOMContentLoaded", () => {

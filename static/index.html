@@ -17,6 +17,8 @@
     <!-- Status bar: honest about which backends are live (see GET /api/health) -->
     <header class="statusbar" role="banner">
       <div class="brand"><span class="rune" aria-hidden="true">ᛗ</span><h1 class="wordmark">muninn</h1></div>
+      <!-- open-demo role switcher (populated by app.js renderDemoBar; hidden for real logins) -->
+      <div class="demo-switch" id="demo-bar" hidden></div>
       <div class="health" id="health" aria-live="polite">
         <span class="badge" data-role="memory">memory: <b>…</b></span>
         <span class="badge" data-role="llm">llm: <b>…</b></span>
@@ -44,10 +46,10 @@
 
       <section class="pane pane-active" aria-label="Active incident">
         <div id="active" class="active-empty">
-          <!-- empty state = invitation, not a void -->
+          <!-- empty state = invitation, not a void (app.js renderEmptyActive replaces this
+               with a role/demo/data-aware state once the boot gate passes) -->
           <p class="empty-title">Muninn's memory is empty.</p>
           <p class="empty-sub">Seed the demo dataset to watch it recall past outages.</p>
-          <button class="btn" id="btn-seed-2">Seed demo data</button>
         </div>
       </section>
 

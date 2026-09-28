@@ -339,3 +339,42 @@ a:hover { text-decoration: underline; }
 .inline-form { max-width: 48ch; }
 .inline-form h2 { margin-bottom: var(--sp-3); }
 .form-actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-3); }
+
+/* ---- Phase 7: open-demo role switcher + chart legends (renderer internals) --- */
+
+/* status-bar demo switcher — prominent, labeled, warm-tinted so it reads as "demo" */
+.demo-switch {
+  display: flex; align-items: center; gap: var(--sp-3); min-width: 0;
+  padding: 4px var(--sp-3);
+  border: 1px solid color-mix(in srgb, var(--warm) 45%, var(--line));
+  border-radius: 999px; background: var(--warm-soft);
+}
+.demo-label { color: var(--ink); font-size: var(--t-xs); white-space: nowrap; }
+.demo-roles { display: flex; gap: var(--sp-1); }
+.demo-role {
+  background: transparent; border: 1px solid var(--line); color: var(--muted);
+  border-radius: 999px; padding: 4px 10px; cursor: pointer;
+  font: 500 var(--t-xs)/1 var(--sans);
+}
+.demo-role:hover:not(:disabled) { color: var(--ink); border-color: var(--warm); }
+.demo-role.is-active {
+  background: var(--warm); color: var(--bg); border-color: var(--warm); cursor: default;
+}
+.demo-login-link {
+  background: transparent; border: 0; color: var(--warm); cursor: pointer;
+  font: 500 var(--t-xs)/1 var(--sans); text-decoration: underline; padding: 4px 6px;
+}
+
+/* "← Continue in demo mode" escape on the auth gate (auth.js _renderAuthScreen) */
+.auth-back {
+  display: block; width: 100%; margin-top: var(--sp-3);
+  background: transparent; border: 0; color: var(--muted); cursor: pointer;
+  font: 500 var(--t-sm)/1 var(--sans); padding: var(--sp-2);
+}
+.auth-back:hover { color: var(--ink); }
+
+/* chart legends — DOM chips beneath each canvas (kept OUT of the plot, item 4) */
+.chart-legend { display: flex; flex-wrap: wrap; gap: var(--sp-4); margin-top: var(--sp-2); }
+.legend-item { display: inline-flex; align-items: center; gap: var(--sp-1);
+  color: var(--muted); font-size: var(--t-xs); }
+.legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }

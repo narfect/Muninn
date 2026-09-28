@@ -16,14 +16,20 @@
   const RANK = { viewer: 0, responder: 1, admin: 2 };
   const CAP_MIN = {
     view: "viewer", recall: "viewer",
-    triage: "responder", mutate: "responder",
+    // Read-only analysis (run triage, cold/warm compare, reflect) is a viewer capability —
+    // it mutates nothing. Writing (create/transition/resolve/feedback) needs responder.
+    triage: "viewer", mutate: "responder",
     seed: "admin", reset: "admin", users: "admin",
   };
+  const DEFAULT_DEMO_ROLES = ["viewer", "responder", "admin"];
 
   let _user = null;      // the authenticated account, or null when logged out
   let _csrf = "";        // cached CSRF token (cookie is authoritative — see csrf())
   let _onAuth = null;    // app boot callback, registered by app.js via onAuthenticated()
   let _lastFocus = null; // element focused before the auth screen opened
+  let _demo = false;     // is the current session an OPEN-DEMO session (no real login)?
+  let _demoRoles = DEFAULT_DEMO_ROLES.slice();  // roles offered by the server's demo mode
+  let _returnToDemo = false;  // show a "back to demo" escape on the auth screen
 
   /* ---- tiny DOM helpers (local to this module) ---- */
   const qs = (sel, root) => (root || document).querySelector(sel);
@@ -70,6 +76,12 @@
     if (csrf) _csrf = csrf;
   }
 
+  // A demo session is recognised by its account email: the server provisions one account
+  // per role as `<role>@muninn.local` (see backend/services/auth.py DEMO_ACCOUNTS).
+  function _isDemoEmail(email) {
+    return !!email && _demoRoles.some((r) => email === r + "@muninn.local");
+  }
+
   /* ---- public API surface (window.Auth) ---- */
   const Auth = {
     user() { return _user; },
@@ -84,6 +96,23 @@
     },
     onAuthenticated(cb) { _onAuth = cb; },
 
+    // Open-demo mode helpers (no-ops when the server has it disabled).
+    isDemo() { return _demo; },
+    demoRoles() { return _demoRoles.slice(); },
+    async demoStatus() {
+      try { return await authFetch("/api/auth/demo-status"); }
+      catch (_) { return { enabled: false, roles: DEFAULT_DEMO_ROLES.slice() }; }
+    },
+    async demoLogin(role) {
+      const data = await authFetch("/api/auth/demo-login", { method: "POST", body: { role } });
+      _setUser(data.user, readCookie(CSRF_COOKIE));
+      _demo = true;
+      return data.user;
+    },
+    // Open the real login/sign-up screen even while in demo mode; a "back to demo" escape
+    // is offered so the visitor is never trapped at the gate.
+    openLogin() { _returnToDemo = _demo; _showAuth(); },
+
     async me() {
       const data = await authFetch("/api/auth/me");   // raw — bypasses global 401 handler
       _setUser(data.user, data.csrf);
@@ -93,6 +122,7 @@
     async login(email, password) {
       const data = await authFetch("/api/auth/login", { method: "POST", body: { email, password } });
       _setUser(data.user, readCookie(CSRF_COOKIE));
+      _demo = false; _returnToDemo = false;   // a real login supersedes any demo session
       return data.user;
     },
 
@@ -100,28 +130,44 @@
       const data = await authFetch("/api/auth/signup",
         { method: "POST", body: { email, password, name: name || "" } });
       _setUser(data.user, readCookie(CSRF_COOKIE));
+      _demo = false; _returnToDemo = false;
       return data.user;
     },
 
     async logout() {
       try { await authFetch("/api/auth/logout", { method: "POST" }); }
       catch (_) { /* drop the client session regardless of the server's reply */ }
-      _user = null; _csrf = "";
-      _showAuth("You've been signed out.");
+      _user = null; _csrf = ""; _demo = false;
+      // In open-demo mode there is no gate to fall back to — re-enter the demo instead of
+      // stranding the visitor. Otherwise show the sign-in screen.
+      Auth.require();
     },
 
-    // Boot gate: 200 -> hide gate, boot the app, apply role gating; 401 -> show the
-    // gate and fetch NO app data (me() bypasses the global 401 handler, so no loop).
+    // Boot gate. Priority: (1) an existing session (real OR demo) via me(); (2) when none,
+    // open-demo mode if the server enables it (default to admin so the demo is immediately
+    // useful); (3) otherwise the login gate. me() bypasses the global 401 handler, so a
+    // missing session never trips app.js's "session expired" loop.
     async require() {
-      try {
-        const user = await Auth.me();
-        _showApp();
-        if (typeof _onAuth === "function") _onAuth(user);
+      let user = null;
+      try { user = await Auth.me(); } catch (_) { /* no live session */ }
+      const status = await Auth.demoStatus();
+      const demoEnabled = !!(status && status.enabled);
+      _demoRoles = (status && status.roles && status.roles.length)
+        ? status.roles.slice() : DEFAULT_DEMO_ROLES.slice();
+      if (user) {
+        _demo = demoEnabled && _isDemoEmail(user.email);
+        _finishAuth(user);
         return user;
-      } catch (_) {
-        _showAuth();
-        return null;
       }
+      if (demoEnabled) {
+        try {
+          const demoUser = await Auth.demoLogin("admin");   // no login needed — default admin
+          _finishAuth(demoUser);
+          return demoUser;
+        } catch (_) { /* demo bootstrap unavailable — fall through to the gate */ }
+      }
+      _showAuth();
+      return null;
     },
 
     onUnauthorized(msg) {
@@ -283,6 +329,15 @@
     const login = _buildLoginForm();
     const signup = _buildSignupForm();
     card.appendChild(login.form); card.appendChild(signup.form);
+
+    // When the gate is opened voluntarily from open-demo mode, offer an escape back to the
+    // running demo so the visitor is never stranded at a login they don't actually need.
+    if (_returnToDemo && _user) {
+      const back = el("button", "auth-back", "← Continue in demo mode");
+      back.type = "button";
+      back.addEventListener("click", () => { _returnToDemo = false; _finishAuth(_user); });
+      card.appendChild(back);
+    }
     root.appendChild(card);
 
     const select = (which) => {

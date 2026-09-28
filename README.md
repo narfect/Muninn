@@ -55,14 +55,20 @@ git clone <your-repo-url> muninn && cd muninn
 python3 -m backend.server          # -> http://127.0.0.1:8000
 ```
 
-Open the URL and you'll hit a sign-in gate. **Create the first account — it becomes the
-admin** (subsequent sign-ups are viewers until an admin promotes them). Then click **Seed
-demo data**, pick a SEV1 alert, and flip **Cold ⇄ Warm**.
+Open the URL. The local build boots in **open demo mode** — no login needed. The queue is
+already seeded with labeled synthetic incidents, and a status-bar switcher lets you view as
+**Viewer / Responder / Admin** (each mints a real session for that role). Pick a SEV1 alert
+and flip **Cold ⇄ Warm**, or hit **Compare cold vs warm**.
 
-Roles gate what the UI offers and what the server allows: **viewer** reads incidents and
-recalled memory, **responder** can run triage and resolve, **admin** can seed/reset data
-and manage user roles. The client only hides controls it can't use — the server still
-enforces every check.
+Roles gate what the UI offers and what the server allows: **viewer** reads incidents,
+recalled memory, and can run triage/compare; **responder** can also create and resolve
+incidents; **admin** can seed/reset data and manage user roles. The client only hides
+controls it can't use — the server still enforces every check.
+
+Demo mode is **local-only and self-disabling**: set `MUNINN_SERVER_SECRET` (the production
+signal) and it switches off automatically — the sign-in gate returns and **the first
+account created becomes the admin**. The full running guide, per-role capability table, and
+a judge walkthrough are in [`docs/USING_MUNINN.md`](docs/USING_MUNINN.md).
 
 Run the tests:
 
