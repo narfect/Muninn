@@ -8,19 +8,25 @@ skeleton runs end-to-end before Claude Code implements the endpoints.
 """
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import traceback
 from dataclasses import dataclass, field
+from http.cookies import CookieError, SimpleCookie
 from typing import Any, Callable, Iterator, Optional
 from urllib.parse import parse_qs, urlparse
 
-from .errors import ConflictError, NotFoundError
+from .errors import AuthError, ConflictError, ForbiddenError, LockedError, NotFoundError
+from .models import ROLE_RANK
 
 log = logging.getLogger("muninn.router")
 
 # A streaming body is a generator yielding already-encoded SSE text chunks.
 StreamFn = Callable[[], Iterator[str]]
+
+# HTTP methods that mutate state and therefore require a CSRF check when authenticated.
+_MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 
 
 @dataclass
@@ -31,12 +37,37 @@ class Request:
     headers: dict[str, str]
     body: bytes = b""
     path_params: dict[str, str] = field(default_factory=dict)
+    # Populated by the router's auth middleware (None when unauthenticated).
+    current_user: Optional[Any] = None
+    token: Optional[str] = None
+    token_hash: Optional[str] = None
 
     def json(self) -> Any:
         """Parse the JSON body; returns {} for an empty body, raises ValueError on bad JSON."""
         if not self.body:
             return {}
         return json.loads(self.body.decode("utf-8"))
+
+    def header(self, name: str, default: str = "") -> str:
+        """Case-insensitive header lookup (HTTP header names are case-insensitive)."""
+        name = name.lower()
+        for k, v in self.headers.items():
+            if k.lower() == name:
+                return v
+        return default
+
+    def cookie(self, name: str) -> Optional[str]:
+        """Read a single cookie value from the Cookie header, or None."""
+        raw = self.header("cookie")
+        if not raw:
+            return None
+        jar: SimpleCookie = SimpleCookie()
+        try:
+            jar.load(raw)
+        except CookieError:
+            return None
+        morsel = jar.get(name)
+        return morsel.value if morsel else None
 
     @classmethod
     def build(cls, method: str, raw_path: str, headers: dict[str, str], body: bytes) -> "Request":
@@ -51,6 +82,7 @@ class Response:
     body: bytes = b""
     headers: dict[str, str] = field(default_factory=dict)
     stream: Optional[StreamFn] = None  # when set, server emits an SSE response
+    cookies: list[str] = field(default_factory=list)  # raw Set-Cookie header values
 
     @classmethod
     def json(cls, data: Any, status: int = 200) -> "Response":
@@ -79,18 +111,37 @@ class Response:
 
 
 class Router:
-    """Matches (method, path) against a route table of (method, pattern, handler)."""
+    """Matches (method, path) against a route table and enforces auth/RBAC/CSRF.
 
-    def __init__(self, routes: list[tuple[str, str, Callable[[Request], Response]]]) -> None:
-        self._routes = [(m.upper(), self._split(p), p, h) for (m, p, h) in routes]
+    Each route is either a 3-tuple ``(method, pattern, handler)`` — a public route — or a
+    4-tuple ``(method, pattern, handler, required_role)``. When ``required_role`` is set the
+    router requires a valid session (401 otherwise), enforces the role hierarchy via
+    ``ROLE_RANK`` (403 if too low), and on mutating methods verifies CSRF (same-origin
+    Origin/Referer when present + a double-submit ``X-CSRF-Token`` matching the session).
+
+    ``auth`` is an ``AuthService`` (or None in transport-only tests, where every route is
+    treated as public so the router stays backward-compatible with bare 3-tuples).
+    """
+
+    def __init__(self, routes: list, auth: Any = None) -> None:
+        self.auth = auth
+        self._routes = [self._normalize(r) for r in routes]
+
+    def _normalize(self, route: tuple) -> tuple:
+        if len(route) == 4:
+            method, pattern, handler, required_role = route
+        else:
+            method, pattern, handler = route
+            required_role = None
+        return (method.upper(), self._split(pattern), pattern, handler, required_role)
 
     @staticmethod
     def _split(pattern: str) -> list[str]:
         return [seg for seg in pattern.strip("/").split("/") if seg != ""]
 
-    def _match(self, method: str, path: str) -> Optional[tuple[Callable[[Request], Response], dict[str, str]]]:
+    def _match(self, method: str, path: str) -> Optional[tuple[Callable[[Request], Response], dict[str, str], Optional[str]]]:
         parts = [seg for seg in path.strip("/").split("/") if seg != ""]
-        for r_method, r_segs, _pat, handler in self._routes:
+        for r_method, r_segs, _pat, handler, required_role in self._routes:
             if r_method != method or len(r_segs) != len(parts):
                 continue
             params: dict[str, str] = {}
@@ -102,18 +153,65 @@ class Router:
                     ok = False
                     break
             if ok:
-                return handler, params
+                return handler, params, required_role
         return None
 
+    # --- auth middleware --------------------------------------------------
+    def _authenticate(self, req: Request) -> None:
+        """Resolve the session cookie (if any) onto the request. Never raises."""
+        if self.auth is None:
+            return
+        token = req.cookie(self.auth.SESSION_COOKIE)
+        result = self.auth.authenticate(token)
+        if result:
+            req.current_user, req.token_hash = result
+            req.token = token
+
+    @staticmethod
+    def _same_origin(origin_or_referer: str, host: str) -> bool:
+        return urlparse(origin_or_referer).netloc == host
+
+    def _check_csrf(self, req: Request) -> None:
+        """Reject cross-site state changes: same-origin Origin/Referer (when the browser
+        sends one) plus a double-submit token that must match this session's CSRF token."""
+        origin = req.header("origin") or req.header("referer")
+        if origin:
+            host = req.header("host")
+            if host and not self._same_origin(origin, host):
+                raise ForbiddenError("cross-origin request blocked")
+        provided = req.header("x-csrf-token")
+        expected = self.auth.csrf_token(req.token_hash)
+        if not provided or not hmac.compare_digest(provided, expected):
+            raise ForbiddenError("missing or invalid CSRF token")
+
+    def _authorize(self, req: Request, required_role: Optional[str]) -> None:
+        if required_role is None:
+            return
+        if req.current_user is None:
+            raise AuthError("authentication required")
+        if ROLE_RANK.get(req.current_user.role, -1) < ROLE_RANK.get(required_role, 99):
+            raise ForbiddenError("insufficient permissions for this action")
+        if req.method in _MUTATING:
+            self._check_csrf(req)
+
     def dispatch(self, req: Request) -> Response:
-        """Route the request; convert stubs to 501 and unexpected errors to 500 JSON."""
+        """Route the request; enforce auth/RBAC/CSRF; map domain errors to status codes."""
         matched = self._match(req.method, req.path)
         if matched is None:
             return Response.error("no such route", status=404, code="not_found")
-        handler, params = matched
+        handler, params, required_role = matched
         req.path_params = params
         try:
+            self._authenticate(req)
+            self._authorize(req, required_role)
             return handler(req)
+        except AuthError as exc:
+            return Response.error(str(exc) or "authentication required", status=401,
+                                  code="unauthorized")
+        except LockedError as exc:
+            return Response.error(str(exc) or "temporarily locked", status=429, code="locked")
+        except ForbiddenError as exc:
+            return Response.error(str(exc) or "forbidden", status=403, code="forbidden")
         except NotFoundError as exc:
             return Response.error(str(exc) or "not found", status=404, code="not_found")
         except ConflictError as exc:

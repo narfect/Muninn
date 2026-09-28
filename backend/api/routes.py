@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..config import ROOT
 from ..errors import NotFoundError
-from ..models import Incident
+from ..models import ADMIN, RESPONDER, VIEWER, Incident
 from ..router import Request, Response
 
 if TYPE_CHECKING:  # avoid import cycle at runtime
@@ -38,6 +38,44 @@ class Routes:
             "llm_backend": self.ctx.settings.resolved_llm_backend(),
             "n_memories": self.ctx.memory.count(),
         })
+
+    # --- auth -------------------------------------------------------------
+    def signup(self, req: "Request") -> "Response":
+        body = req.json()
+        user, token, csrf = self.ctx.auth.signup(
+            email=str(body.get("email", "")), password=str(body.get("password", "")),
+            name=str(body.get("name", "")))
+        resp = Response.json({"user": user.as_dict()}, status=201)
+        resp.cookies = [self.ctx.auth.session_cookie(token), self.ctx.auth.csrf_cookie(csrf)]
+        return resp
+
+    def login(self, req: "Request") -> "Response":
+        body = req.json()
+        user, token, csrf = self.ctx.auth.login(
+            email=str(body.get("email", "")), password=str(body.get("password", "")))
+        resp = Response.json({"user": user.as_dict()})
+        resp.cookies = [self.ctx.auth.session_cookie(token), self.ctx.auth.csrf_cookie(csrf)]
+        return resp
+
+    def logout(self, req: "Request") -> "Response":
+        self.ctx.auth.logout(req.token)
+        resp = Response.json({"ok": True})
+        resp.cookies = self.ctx.auth.clear_cookies()
+        return resp
+
+    def auth_me(self, req: "Request") -> "Response":
+        return Response.json({"user": req.current_user.as_dict(),
+                              "csrf": self.ctx.auth.csrf_token(req.token_hash)})
+
+    # --- users (admin) ----------------------------------------------------
+    def list_users(self, req: "Request") -> "Response":
+        return Response.json({"users": [u.as_dict() for u in self.ctx.repo.list_users()]})
+
+    def set_user_role(self, req: "Request") -> "Response":
+        body = req.json()
+        role = str(body.get("role", "")).strip().lower()
+        user = self.ctx.auth.set_role(self._id(req), role)
+        return Response.json({"user": user.as_dict()})
 
     # --- catalog ----------------------------------------------------------
     def list_services(self, req: "Request") -> "Response":
@@ -203,27 +241,36 @@ class Routes:
             tags=list(tags), log_excerpt=str(data.get("log_excerpt", "")))
 
     # --- routing table (CONCRETE STRUCTURE) -------------------------------
-    def table(self) -> list[tuple[str, str, Any]]:
-        """(method, path_pattern, handler). ``{id}`` is a path parameter.
-        The router matches these in order; static/SPA is handled by the server."""
+    def table(self) -> list[tuple[str, str, Any, Any]]:
+        """(method, path_pattern, handler, required_role). ``{id}`` is a path parameter;
+        ``required_role=None`` is a public route. The router matches these in order and
+        enforces the role hierarchy (viewer < responder < admin); static/SPA is handled by
+        the server. Roles follow docs/PRODUCTION_PLAN.md §5: reads are viewer, incident
+        mutations + triage/compare + reflect are responder, demo + user admin are admin."""
         return [
-            ("GET", "/api/health", self.health),
-            ("GET", "/api/services", self.list_services),
-            ("GET", "/api/runbooks", self.list_runbooks),
-            ("GET", "/api/incidents", self.list_incidents),
-            ("POST", "/api/incidents", self.create_incident),
-            ("GET", "/api/incidents/{id}", self.get_incident),
-            ("POST", "/api/incidents/{id}/transition", self.transition_incident),
-            ("POST", "/api/incidents/{id}/resolve", self.resolve_incident),
-            ("POST", "/api/incidents/{id}/feedback", self.incident_feedback),
-            ("POST", "/api/triage", self.triage),
-            ("GET", "/api/triage/stream", self.triage_stream),
-            ("POST", "/api/compare", self.compare),
-            ("POST", "/api/memory/recall", self.memory_recall),
-            ("POST", "/api/memory/reflect", self.memory_reflect),
-            ("GET", "/api/metrics/summary", self.metrics_summary),
-            ("GET", "/api/metrics/mttr", self.metrics_mttr),
-            ("GET", "/api/metrics/learning-curve", self.metrics_learning_curve),
-            ("POST", "/api/demo/seed", self.demo_seed),
-            ("POST", "/api/demo/reset", self.demo_reset),
+            ("GET", "/api/health", self.health, None),
+            ("POST", "/api/auth/signup", self.signup, None),
+            ("POST", "/api/auth/login", self.login, None),
+            ("POST", "/api/auth/logout", self.logout, VIEWER),
+            ("GET", "/api/auth/me", self.auth_me, VIEWER),
+            ("GET", "/api/services", self.list_services, VIEWER),
+            ("GET", "/api/runbooks", self.list_runbooks, VIEWER),
+            ("GET", "/api/incidents", self.list_incidents, VIEWER),
+            ("POST", "/api/incidents", self.create_incident, RESPONDER),
+            ("GET", "/api/incidents/{id}", self.get_incident, VIEWER),
+            ("POST", "/api/incidents/{id}/transition", self.transition_incident, RESPONDER),
+            ("POST", "/api/incidents/{id}/resolve", self.resolve_incident, RESPONDER),
+            ("POST", "/api/incidents/{id}/feedback", self.incident_feedback, RESPONDER),
+            ("POST", "/api/triage", self.triage, RESPONDER),
+            ("GET", "/api/triage/stream", self.triage_stream, RESPONDER),
+            ("POST", "/api/compare", self.compare, RESPONDER),
+            ("POST", "/api/memory/recall", self.memory_recall, VIEWER),
+            ("POST", "/api/memory/reflect", self.memory_reflect, RESPONDER),
+            ("GET", "/api/metrics/summary", self.metrics_summary, VIEWER),
+            ("GET", "/api/metrics/mttr", self.metrics_mttr, VIEWER),
+            ("GET", "/api/metrics/learning-curve", self.metrics_learning_curve, VIEWER),
+            ("POST", "/api/demo/seed", self.demo_seed, ADMIN),
+            ("POST", "/api/demo/reset", self.demo_reset, ADMIN),
+            ("GET", "/api/users", self.list_users, ADMIN),
+            ("PATCH", "/api/users/{id}", self.set_user_role, ADMIN),
         ]

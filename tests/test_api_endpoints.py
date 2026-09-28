@@ -12,18 +12,42 @@ from backend.config import settings
 from backend.router import Request
 
 
+def _admin_headers(router):
+    """Sign up the first account (bootstraps to admin) and return headers that carry the
+    session cookie + CSRF token + a same-origin Origin, so the API tests exercise the real
+    handlers through the auth middleware as an admin (which passes every role check)."""
+    raw = json.dumps({"email": "admin@muninn.test", "password": "muninn-admin-pw1",
+                      "name": "Admin"}).encode("utf-8")
+    resp = router.dispatch(Request.build(
+        "POST", "/api/auth/signup",
+        {"Origin": "http://127.0.0.1", "Host": "127.0.0.1"}, raw))
+    token = csrf = ""
+    for c in resp.cookies:
+        name, _, rest = c.partition("=")
+        value = rest.split(";", 1)[0]
+        if name == "muninn_session":
+            token = value
+        elif name == "muninn_csrf":
+            csrf = value
+    return {"Cookie": f"muninn_session={token}", "X-CSRF-Token": csrf,
+            "Origin": "http://127.0.0.1", "Host": "127.0.0.1"}
+
+
 def _app():
     d = tempfile.mkdtemp()
     st = dataclasses.replace(settings, db_path=os.path.join(d, "t.db"),
                              hindsight_bank="api-test",
                              memory_backend="local", llm_backend="local")
     ctx = server.build_context(st)
-    return ctx, server.build_router(ctx)
+    router = server.build_router(ctx)
+    router._auth_headers = _admin_headers(router)
+    return ctx, router
 
 
 def _req(router, method, path, body=None):
     raw = json.dumps(body).encode("utf-8") if body is not None else b""
-    resp = router.dispatch(Request.build(method, path, {}, raw))
+    headers = dict(getattr(router, "_auth_headers", {}))
+    resp = router.dispatch(Request.build(method, path, headers, raw))
     parsed = json.loads(resp.body.decode("utf-8")) if resp.body else None
     return resp, parsed
 
@@ -105,7 +129,8 @@ class TestApiStreaming(unittest.TestCase):
         _req(router, "POST", "/api/demo/seed")
         inc = ctx.repo.get_incident_by_external("INC-0058")
         resp = router.dispatch(Request.build(
-            "GET", f"/api/triage/stream?incident_id={inc.id}&use_memory=true", {}, b""))
+            "GET", f"/api/triage/stream?incident_id={inc.id}&use_memory=true",
+            dict(router._auth_headers), b""))
         self.assertIsNotNone(resp.stream)
         frames = "".join(resp.stream())
         self.assertIn("event: token", frames)

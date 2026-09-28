@@ -30,6 +30,7 @@ from .llm import build_reasoner
 from .llm.agent import TriageAgent
 from .memory import build_memory_store
 from .router import Request, Response, Router
+from .services.auth import AuthService
 from .services.incidents import IncidentService
 from .services.metrics import MetricsService
 from .services.triage import TriageService
@@ -51,6 +52,7 @@ class AppContext:
     incidents: IncidentService
     triage: TriageService
     metrics: MetricsService
+    auth: AuthService
 
 
 def build_context(settings: Settings = default_settings) -> AppContext:
@@ -63,12 +65,14 @@ def build_context(settings: Settings = default_settings) -> AppContext:
     incidents = IncidentService(repo=repo, memory=memory)
     triage = TriageService(memory=memory, agent=agent, repo=repo, top_k=settings.recall_top_k)
     metrics = MetricsService(repo=repo, memory=memory)
+    auth = AuthService(repo=repo, settings=settings)
     return AppContext(settings=settings, repo=repo, memory=memory, reasoner=reasoner,
-                      agent=agent, incidents=incidents, triage=triage, metrics=metrics)
+                      agent=agent, incidents=incidents, triage=triage, metrics=metrics,
+                      auth=auth)
 
 
 def build_router(ctx: AppContext) -> Router:
-    return Router(Routes(ctx).table())
+    return Router(Routes(ctx).table(), auth=ctx.auth)
 
 
 def _safe_static_path(url_path: str) -> str | None:
@@ -117,6 +121,8 @@ def make_handler(router: Router, max_body_bytes: int = 1_048_576):
             for k, v in resp.headers.items():
                 self.send_header(k, v)
             self._send_security_headers()
+            for cookie in resp.cookies:
+                self.send_header("Set-Cookie", cookie)
             self.send_header("Content-Length", str(len(resp.body)))
             self.end_headers()
             if self.command != "HEAD":
@@ -127,6 +133,8 @@ def make_handler(router: Router, max_body_bytes: int = 1_048_576):
             for k, v in resp.headers.items():
                 self.send_header(k, v)
             self._send_security_headers()
+            for cookie in resp.cookies:
+                self.send_header("Set-Cookie", cookie)
             # S10: one SSE response per connection — never keep it alive.
             self.close_connection = True
             if self.command == "HEAD":
@@ -178,6 +186,9 @@ def make_handler(router: Router, max_body_bytes: int = 1_048_576):
 
         def do_POST(self) -> None:
             self._handle("POST")
+
+        def do_PATCH(self) -> None:
+            self._handle("PATCH")
 
         def do_HEAD(self) -> None:
             self._handle("GET")

@@ -22,6 +22,13 @@ SEV2 = "SEV2"  # major degradation
 SEV3 = "SEV3"  # minor / partial
 SEVERITIES = (SEV1, SEV2, SEV3)
 
+# --- auth roles (viewer < responder < admin; each inherits the levels below) ---
+VIEWER = "viewer"
+RESPONDER = "responder"
+ADMIN = "admin"
+ROLES = (VIEWER, RESPONDER, ADMIN)
+ROLE_RANK = {VIEWER: 0, RESPONDER: 1, ADMIN: 2}
+
 
 def now_ms() -> int:
     """Current wall-clock time in milliseconds (used for ordering + MTTR)."""
@@ -90,6 +97,25 @@ class Incident:
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class User:
+    """An authenticated account. ``password_hash`` is never serialized to clients."""
+
+    email: str
+    role: str = VIEWER
+    id: Optional[int] = None
+    name: str = ""
+    password_hash: str = ""
+    created_at: int = field(default_factory=now_ms)
+    failed_attempts: int = 0
+    locked_until: Optional[int] = None
+
+    def as_dict(self) -> dict[str, Any]:
+        # Deliberately omit password_hash / lockout internals from any API payload.
+        return {"id": self.id, "email": self.email, "name": self.name,
+                "role": self.role, "created_at": self.created_at}
 
 
 @dataclass

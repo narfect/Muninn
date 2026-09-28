@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .errors import ConflictError
-from .models import Incident, Runbook, Service
+from .models import Incident, Runbook, Service, User
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS services (
@@ -68,6 +68,27 @@ CREATE TABLE IF NOT EXISTS timeline (
     FOREIGN KEY (incident_id) REFERENCES incidents(id)
 );
 CREATE INDEX IF NOT EXISTS idx_timeline_incident ON timeline(incident_id);
+
+CREATE TABLE IF NOT EXISTS users (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    email           TEXT UNIQUE NOT NULL,
+    name            TEXT DEFAULT '',
+    password_hash   TEXT NOT NULL,           -- algo$params$salt$hash
+    role            TEXT NOT NULL DEFAULT 'viewer',   -- viewer|responder|admin
+    created_at      INTEGER NOT NULL,
+    failed_attempts INTEGER NOT NULL DEFAULT 0,
+    locked_until    INTEGER                  -- epoch ms; NULL = not locked
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,             -- sha256(cookie token)
+    user_id    INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    last_seen  INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 """
 
 _LIST_FIELDS = {"tags", "remediation_steps"}
@@ -122,6 +143,19 @@ def _row_to_incident(row: sqlite3.Row) -> Incident:
         resolver=row["resolver"] or "",
         mttr_minutes=row["mttr_minutes"],
         feedback=_loads(row["feedback"], {}),
+    )
+
+
+def _row_to_user(row: sqlite3.Row) -> User:
+    return User(
+        id=row["id"],
+        email=row["email"],
+        name=row["name"] or "",
+        password_hash=row["password_hash"],
+        role=row["role"],
+        created_at=row["created_at"],
+        failed_attempts=row["failed_attempts"] or 0,
+        locked_until=row["locked_until"],
     )
 
 
@@ -283,9 +317,89 @@ class Repository:
                  "payload": _loads(r["payload"], {})} for r in rows]
 
     def reset(self) -> None:
-        """Drop all rows (used by the seeder for a clean, reproducible demo)."""
+        """Drop all rows (used by the seeder for a clean, reproducible demo).
+
+        User accounts and sessions are intentionally preserved — a demo reset must not log
+        everyone out or delete the operator's own admin account."""
         with connect(self.db_path) as conn:
             for t in ("timeline", "incidents", "runbooks", "services"):
                 conn.execute(f"DELETE FROM {t}")
+
+    # --- users (auth) ---
+    def create_user(self, user: User) -> User:
+        try:
+            with connect(self.db_path) as conn:
+                cur = conn.execute(
+                    """INSERT INTO users(email, name, password_hash, role, created_at,
+                                         failed_attempts, locked_until)
+                       VALUES(?,?,?,?,?,?,?)""",
+                    (user.email, user.name, user.password_hash, user.role,
+                     user.created_at, user.failed_attempts, user.locked_until),
+                )
+                user.id = cur.lastrowid
+            return user
+        except sqlite3.IntegrityError as exc:
+            # email is UNIQUE — a duplicate signup is a client conflict, not a 500.
+            raise ConflictError("email already registered") from exc
+
+    def get_user_by_email(self, email: str) -> Optional[User]:
+        with connect(self.db_path) as conn:
+            r = conn.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+        return _row_to_user(r) if r else None
+
+    def get_user_by_id(self, user_id: int) -> Optional[User]:
+        with connect(self.db_path) as conn:
+            r = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        return _row_to_user(r) if r else None
+
+    def count_users(self) -> int:
+        with connect(self.db_path) as conn:
+            r = conn.execute("SELECT COUNT(*) c FROM users").fetchone()
+        return int(r["c"])
+
+    def list_users(self) -> list[User]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute("SELECT * FROM users ORDER BY created_at, id").fetchall()
+        return [_row_to_user(r) for r in rows]
+
+    def update_user_role(self, user_id: int, role: str) -> Optional[User]:
+        with connect(self.db_path) as conn:
+            conn.execute("UPDATE users SET role=? WHERE id=?", (role, user_id))
+        return self.get_user_by_id(user_id)
+
+    def set_login_state(self, user_id: int, failed_attempts: int,
+                        locked_until: Optional[int]) -> None:
+        with connect(self.db_path) as conn:
+            conn.execute("UPDATE users SET failed_attempts=?, locked_until=? WHERE id=?",
+                         (failed_attempts, locked_until, user_id))
+
+    # --- sessions (auth) ---
+    def create_session(self, token_hash: str, user_id: int, created_at: int,
+                        last_seen: int, expires_at: int) -> None:
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """INSERT INTO sessions(token_hash, user_id, created_at, last_seen, expires_at)
+                   VALUES(?,?,?,?,?)""",
+                (token_hash, user_id, created_at, last_seen, expires_at),
+            )
+
+    def get_session(self, token_hash: str) -> Optional[dict]:
+        with connect(self.db_path) as conn:
+            r = conn.execute("SELECT * FROM sessions WHERE token_hash=?",
+                             (token_hash,)).fetchone()
+        return dict(r) if r else None
+
+    def touch_session(self, token_hash: str, last_seen: int) -> None:
+        with connect(self.db_path) as conn:
+            conn.execute("UPDATE sessions SET last_seen=? WHERE token_hash=?",
+                         (last_seen, token_hash))
+
+    def delete_session(self, token_hash: str) -> None:
+        with connect(self.db_path) as conn:
+            conn.execute("DELETE FROM sessions WHERE token_hash=?", (token_hash,))
+
+    def delete_sessions_for_user(self, user_id: int) -> None:
+        with connect(self.db_path) as conn:
+            conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
 
 

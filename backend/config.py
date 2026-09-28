@@ -106,6 +106,34 @@ class Settings:
         default_factory=lambda: int(_env("MUNINN_MAX_BODY_BYTES", "1048576") or 1048576)
     )
 
+    # --- auth / sessions (Phase 3) ---
+    # A server-side secret used to derive per-session CSRF tokens (HMAC). MUST be set to a
+    # strong random value in any non-local deployment; a random ephemeral value is generated
+    # per process if unset (fine for the local demo, invalidates sessions on restart).
+    server_secret: str = field(
+        default_factory=lambda: _env("MUNINN_SERVER_SECRET", "")
+        or __import__("secrets").token_urlsafe(32)
+    )
+    # Absolute session lifetime and idle timeout, in seconds (default 12h / 30m).
+    session_ttl_seconds: int = field(
+        default_factory=lambda: int(_env("MUNINN_SESSION_TTL", "43200") or 43200)
+    )
+    session_idle_seconds: int = field(
+        default_factory=lambda: int(_env("MUNINN_SESSION_IDLE", "1800") or 1800)
+    )
+    # Add the `Secure` attribute to auth cookies. Off by default because browsers won't send
+    # Secure cookies over http://127.0.0.1; turn on for any https deployment.
+    cookie_secure: bool = field(
+        default_factory=lambda: _env_bool("MUNINN_COOKIE_SECURE", False)
+    )
+    # Failed-login lockout: after this many failures, lock the account for the window.
+    login_max_attempts: int = field(
+        default_factory=lambda: int(_env("MUNINN_LOGIN_MAX_ATTEMPTS", "5") or 5)
+    )
+    login_lockout_seconds: int = field(
+        default_factory=lambda: int(_env("MUNINN_LOGIN_LOCKOUT", "900") or 900)
+    )
+
     def resolved_memory_backend(self) -> str:
         """Decide which memory backend will actually be used."""
         if self.memory_backend == "hindsight":

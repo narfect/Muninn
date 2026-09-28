@@ -29,18 +29,42 @@ def _svc():
     return IncidentService(repo, mem), repo, mem
 
 
+def _admin_headers(router):
+    """Bootstrap the first account (becomes admin) and return headers carrying the session
+    cookie + CSRF token + same-origin Origin, so the Phase 1 API regressions run as admin
+    through the Phase 3 auth middleware."""
+    raw = json.dumps({"email": "admin@muninn.test", "password": "muninn-admin-pw1",
+                      "name": "Admin"}).encode("utf-8")
+    resp = router.dispatch(Request.build(
+        "POST", "/api/auth/signup",
+        {"Origin": "http://127.0.0.1", "Host": "127.0.0.1"}, raw))
+    token = csrf = ""
+    for c in resp.cookies:
+        name, _, rest = c.partition("=")
+        value = rest.split(";", 1)[0]
+        if name == "muninn_session":
+            token = value
+        elif name == "muninn_csrf":
+            csrf = value
+    return {"Cookie": f"muninn_session={token}", "X-CSRF-Token": csrf,
+            "Origin": "http://127.0.0.1", "Host": "127.0.0.1"}
+
+
 def _app():
     d = tempfile.mkdtemp()
     st = dataclasses.replace(settings, db_path=os.path.join(d, "t.db"),
                              hindsight_bank="correctness-api",
                              memory_backend="local", llm_backend="local")
     ctx = server.build_context(st)
-    return ctx, server.build_router(ctx)
+    router = server.build_router(ctx)
+    router._auth_headers = _admin_headers(router)
+    return ctx, router
 
 
 def _req(router, method, path, body=None):
     raw = json.dumps(body).encode("utf-8") if body is not None else b""
-    resp = router.dispatch(Request.build(method, path, {}, raw))
+    headers = dict(getattr(router, "_auth_headers", {}))
+    resp = router.dispatch(Request.build(method, path, headers, raw))
     parsed = json.loads(resp.body.decode("utf-8")) if resp.body else None
     return resp, parsed
 
