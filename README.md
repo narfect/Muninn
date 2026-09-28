@@ -11,7 +11,7 @@
 > learning loop (retain/recall/reflect), the cold⇄warm triage comparison, streaming
 > briefs, and the MTTR + learning-curve dashboards are all implemented and verified
 > (server boots, full test suite green). Runs fully offline; all incident data is
-> **synthetic and labeled**. See [Project status](#project-status).
+> **synthetic and labeled**.
 
 ## Why Muninn
 
