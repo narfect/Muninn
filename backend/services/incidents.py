@@ -6,9 +6,11 @@ incidents into the memory layer so the agent learns (the institutional-memory lo
 from __future__ import annotations
 
 import re
-from typing import Any
+import secrets
+from typing import Any, Optional
 
 from ..db import Repository
+from ..errors import NotFoundError
 from ..memory import MemoryStore
 from ..models import (
     MITIGATED,
@@ -65,7 +67,8 @@ class IncidentService:
         log_excerpt = str(payload.get("log_excerpt", ""))
         error_signature = str(payload.get("error_signature", "")).strip() or \
             self.signature(service, symptom, tags, log_excerpt)
-        external_id = str(payload.get("external_id", "")).strip() or f"INC-{now_ms() % 1_000_000}"
+        external_id = str(payload.get("external_id", "")).strip() or \
+            f"INC-{now_ms() % 1_000_000}-{secrets.token_hex(2)}"
 
         inc = Incident(
             external_id=external_id, title=title, service=service, severity=severity,
@@ -83,12 +86,15 @@ class IncidentService:
             raise ValueError(f"unknown status '{status}'")
         inc = self.repo.get_incident(incident_id)
         if inc is None:
-            raise ValueError(f"incident {incident_id} not found")
+            raise NotFoundError(f"incident {incident_id} not found")
         if _ORDER[status] <= _ORDER.get(inc.status, 0):
             raise ValueError(f"illegal transition {inc.status} -> {status}")
+        # B1: transitioning to RESOLVED must run the SAME finalization as /resolve —
+        # compute MTTR and retain the experience to memory (the learning loop), not just
+        # flip the status. Delegate to the shared path.
+        if status == RESOLVED:
+            return self._finalize_resolution(inc)
         inc.status = status
-        if status == RESOLVED and inc.resolved_at is None:
-            inc.resolved_at = now_ms()
         self.repo.update_incident(inc)
         self.repo.add_timeline(inc.id, "transition", f"{inc.status}")
         return inc
@@ -97,12 +103,31 @@ class IncidentService:
                 remediation_steps: list[str], resolver: str) -> Incident:
         inc = self.repo.get_incident(incident_id)
         if inc is None:
-            raise ValueError(f"incident {incident_id} not found")
+            raise NotFoundError(f"incident {incident_id} not found")
+        # S2: a non-list remediation_steps (e.g. the string "rollback") must be rejected,
+        # not silently exploded into characters. Mirror the tags guard in create_incident.
+        if remediation_steps is not None and not isinstance(remediation_steps, list):
+            raise ValueError("remediation_steps must be a list")
+        return self._finalize_resolution(
+            inc, root_cause=root_cause, remediation_steps=remediation_steps,
+            resolver=resolver)
+
+    def _finalize_resolution(self, inc: Incident, *, root_cause: str = "",
+                             remediation_steps: Optional[list[str]] = None,
+                             resolver: str = "") -> Incident:
+        """Shared resolution finalizer used by both ``resolve()`` and
+        ``transition(status='resolved')``: stamp resolution fields, compute MTTR, persist,
+        and RETAIN the rich experience memory (the institutional-memory loop). Callers
+        that don't supply resolution details (a bare transition) simply pass none."""
         inc.status = RESOLVED
-        inc.resolved_at = now_ms()
-        inc.root_cause = str(root_cause or "")
-        inc.remediation_steps = [str(s) for s in (remediation_steps or [])]
-        inc.resolver = str(resolver or "")
+        if inc.resolved_at is None:
+            inc.resolved_at = now_ms()
+        if root_cause:
+            inc.root_cause = str(root_cause)
+        if remediation_steps is not None:
+            inc.remediation_steps = [str(s) for s in remediation_steps]
+        if resolver:
+            inc.resolver = str(resolver)
         if inc.created_at and inc.resolved_at:
             inc.mttr_minutes = round((inc.resolved_at - inc.created_at) / 60_000.0, 1)
         self.repo.update_incident(inc)
@@ -126,7 +151,7 @@ class IncidentService:
                         root_cause_correct: bool, note: str = "") -> Incident:
         inc = self.repo.get_incident(incident_id)
         if inc is None:
-            raise ValueError(f"incident {incident_id} not found")
+            raise NotFoundError(f"incident {incident_id} not found")
         inc.feedback = {
             "helpful": bool(helpful),
             "root_cause_correct": bool(root_cause_correct),

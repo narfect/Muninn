@@ -81,6 +81,11 @@ class HindsightClient:
         except (json.JSONDecodeError, ValueError) as exc:
             log.warning("hindsight %s %s bad response: %s", method, url, exc)
             return {"ok": False, "error": "bad_response", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001 - the store contract is "never raise" (S6)
+            # Any unexpected error (e.g. socket.timeout on older Pythons, an encoding
+            # error) must still degrade to a safe dict so recall/reflect never hard-fail.
+            log.warning("hindsight %s %s unexpected error: %s", method, url, exc)
+            return {"ok": False, "error": "unexpected", "detail": str(exc)}
 
     def create_bank(self, bank_id: str, name: str, mission: str = "") -> dict[str, Any]:
         body: dict[str, Any] = {"bank_id": bank_id, "name": name}

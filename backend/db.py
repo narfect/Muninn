@@ -12,6 +12,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Optional
 
+from .errors import ConflictError
 from .models import Incident, Runbook, Service
 
 SCHEMA = """
@@ -196,21 +197,26 @@ class Repository:
 
     # --- incidents ---
     def add_incident(self, inc: Incident) -> Incident:
-        with connect(self.db_path) as conn:
-            cur = conn.execute(
-                """INSERT INTO incidents(
-                       external_id, title, service, severity, symptom, error_signature,
-                       tags, metrics, log_excerpt, status, created_at, resolved_at,
-                       root_cause, remediation_steps, resolver, mttr_minutes, feedback)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (inc.external_id, inc.title, inc.service, inc.severity, inc.symptom,
-                 inc.error_signature, json.dumps(inc.tags), json.dumps(inc.metrics),
-                 inc.log_excerpt, inc.status, inc.created_at, inc.resolved_at,
-                 inc.root_cause, json.dumps(inc.remediation_steps), inc.resolver,
-                 inc.mttr_minutes, json.dumps(inc.feedback)),
-            )
-            inc.id = cur.lastrowid
-        return inc
+        try:
+            with connect(self.db_path) as conn:
+                cur = conn.execute(
+                    """INSERT INTO incidents(
+                           external_id, title, service, severity, symptom, error_signature,
+                           tags, metrics, log_excerpt, status, created_at, resolved_at,
+                           root_cause, remediation_steps, resolver, mttr_minutes, feedback)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (inc.external_id, inc.title, inc.service, inc.severity, inc.symptom,
+                     inc.error_signature, json.dumps(inc.tags), json.dumps(inc.metrics),
+                     inc.log_excerpt, inc.status, inc.created_at, inc.resolved_at,
+                     inc.root_cause, json.dumps(inc.remediation_steps), inc.resolver,
+                     inc.mttr_minutes, json.dumps(inc.feedback)),
+                )
+                inc.id = cur.lastrowid
+            return inc
+        except sqlite3.IntegrityError as exc:
+            # external_id is UNIQUE NOT NULL — a collision is a client conflict (409), not
+            # an unhandled 500 (S3).
+            raise ConflictError(f"incident '{inc.external_id}' already exists") from exc
 
     def update_incident(self, inc: Incident) -> None:
         with connect(self.db_path) as conn:

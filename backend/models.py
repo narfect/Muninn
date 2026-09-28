@@ -143,4 +143,9 @@ class Brief:
     latency_ms: int = 0
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        # Compatibility alias: the canonical field is ``root_cause_hypothesis`` but the
+        # API contract (and external clients) expect a ``root_cause`` key. Expose both so
+        # raw-JSON consumers don't read ``root_cause`` as null (S1).
+        d["root_cause"] = d["root_cause_hypothesis"]
+        return d

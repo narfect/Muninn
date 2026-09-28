@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Optional
 from urllib.parse import parse_qs, urlparse
 
+from .errors import ConflictError, NotFoundError
+
 log = logging.getLogger("muninn.router")
 
 # A streaming body is a generator yielding already-encoded SSE text chunks.
@@ -109,6 +111,10 @@ class Router:
         req.path_params = params
         try:
             return handler(req)
+        except NotFoundError as exc:
+            return Response.error(str(exc) or "not found", status=404, code="not_found")
+        except ConflictError as exc:
+            return Response.error(str(exc) or "conflict", status=409, code="conflict")
         except NotImplementedError as exc:
             log.warning("handler not implemented: %s %s (%s)", req.method, req.path, exc)
             return Response.error(f"endpoint not implemented yet: {exc}", status=501,

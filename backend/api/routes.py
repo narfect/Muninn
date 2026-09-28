@@ -12,6 +12,7 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 from ..config import ROOT
+from ..errors import NotFoundError
 from ..models import Incident
 from ..router import Request, Response
 
@@ -185,7 +186,7 @@ class Routes:
         if inc_id not in (None, ""):
             inc = self.ctx.repo.get_incident(int(inc_id))
             if inc is None:
-                raise ValueError(f"incident {inc_id} not found")
+                raise NotFoundError(f"incident {inc_id} not found")
             return inc
         service = str(data.get("service", "")).strip()
         title = str(data.get("title", "")).strip()

@@ -40,6 +40,9 @@ class HindsightStore(MemoryStore):
         self._lock = threading.Lock()
         self._count = 0
         self._bank_ready = False
+        # S5: ensure the bank exists up front (idempotent, degrades gracefully if the
+        # backend is unreachable) so the first retain/recall doesn't hit a missing bank.
+        self.ensure_bank()
 
     def ensure_bank(self) -> None:
         with self._lock:
@@ -96,7 +99,30 @@ class HindsightStore(MemoryStore):
         return ""
 
     def count(self) -> int:
+        """Session-local memory count.
+
+        S8: Hindsight exposes no verified stats endpoint in this client, so this reflects
+        only retains performed by THIS process (it starts at 0 on restart). It is a
+        best-effort indicator for ``health.n_memories``/metrics, NOT an authoritative
+        bank-wide total. Documented as session-local rather than fabricating a count.
+        """
         return self._count
+
+    def reset(self) -> None:
+        """Reset session-local tracking and re-ensure the bank (S7).
+
+        The verified Hindsight REST client exposes no bulk-delete, so this does NOT purge
+        memories already stored server-side — it clears the in-process counter and
+        re-asserts the bank exists. Operators wanting a truly clean slate should point at
+        a fresh ``HINDSIGHT_BANK``. This method exists so the seeder's ``hasattr(...,
+        'reset')`` guard runs a real reset on the Hindsight path instead of silently
+        skipping (which previously accumulated duplicates)."""
+        with self._lock:
+            self._count = 0
+            self._bank_ready = False
+        log.warning("HindsightStore.reset(): server-side memories are not purged "
+                    "(no bulk-delete API); use a fresh bank id for a clean demo.")
+        self.ensure_bank()
 
     def health(self) -> dict[str, Any]:
         try:
