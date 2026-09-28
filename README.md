@@ -7,10 +7,11 @@
 
 ---
 
-> **Status:** engineered scaffold + full specification, ready for feature build.
-> The architecture, contracts, dataset, tests, and UI system are in place and verified
-> (server boots, suite is green); feature implementation follows the phased plan in
-> [`docs/BUILD_SPEC.md`](docs/BUILD_SPEC.md). See [Project status](#project-status).
+> **Status:** feature build complete. Accounts + role-based access, the Hindsight
+> learning loop (retain/recall/reflect), the cold⇄warm triage comparison, streaming
+> briefs, and the MTTR + learning-curve dashboards are all implemented and verified
+> (server boots, full test suite green). Runs fully offline; all incident data is
+> **synthetic and labeled**. See [Project status](#project-status).
 
 ## Why Muninn
 
@@ -54,7 +55,14 @@ git clone <your-repo-url> muninn && cd muninn
 python3 -m backend.server          # -> http://127.0.0.1:8000
 ```
 
-Open the URL, click **Seed demo data**, pick a SEV1 alert, and flip **Cold ⇄ Warm**.
+Open the URL and you'll hit a sign-in gate. **Create the first account — it becomes the
+admin** (subsequent sign-ups are viewers until an admin promotes them). Then click **Seed
+demo data**, pick a SEV1 alert, and flip **Cold ⇄ Warm**.
+
+Roles gate what the UI offers and what the server allows: **viewer** reads incidents and
+recalled memory, **responder** can run triage and resolve, **admin** can seed/reset data
+and manage user roles. The client only hides controls it can't use — the server still
+enforces every check.
 
 Run the tests:
 
@@ -73,6 +81,11 @@ cp .env.example .env
 Backend selection is automatic (`auto`): real service when credentials are present,
 offline fallback otherwise. The UI badges always show which path is live (`hindsight`/
 `local`, `groq`/`local`) so a demo is never misleading.
+
+For any non-local deployment, also set **`MUNINN_SERVER_SECRET`** to a strong random value
+(it keys the per-session CSRF tokens) and **`MUNINN_COOKIE_SECURE=true`** when serving over
+HTTPS. Session lifetimes and login-lockout thresholds are configurable too — see the
+commented **Auth & sessions** block in [`.env.example`](.env.example).
 
 ## How Hindsight is used (the memory core)
 
@@ -119,7 +132,8 @@ semantic memory. Details and diagrams: [`docs/ARCHITECTURE.md`](docs/ARCHITECTUR
 backend/    config·models·db·router·server (concrete) + memory·llm·services·api
 static/     index.html · styles.css (design tokens) · app.js (api client)
 data/       seed_sample.json (labeled synthetic dataset)
-tests/      stdlib unittest suite (concrete layers green; feature tests spec'd)
+tests/      stdlib unittest suite (memory · retrieval · agent · services · api ·
+            auth · hardening · correctness)
 docs/       SRS · ARCHITECTURE · PLAN · MVP · DATASET · UI_SPEC · TEST_PLAN ·
             BUILD_SPEC · HINDSIGHT · DEMO_SCRIPT · SUBMISSION_CHECKLIST ·
             CLAUDE_CODE_HANDOFF
@@ -134,8 +148,9 @@ make compile     # import/syntax gate (compileall)
 make test        # full unittest suite
 ```
 
-Concrete contract layers (models, config, router, dataset) ship with green tests; each
-feature has a specified test that goes green as the feature lands (see
+Every layer ships with green tests — memory (local + Hindsight parity), retrieval, the
+agent (including malformed-tool-call handling), services, the API endpoints, auth/RBAC,
+transport hardening, and correctness regressions (see
 [`docs/TEST_PLAN.md`](docs/TEST_PLAN.md)). Principles: offline-deterministic, no network
 in unit tests, no fabricated passes.
 
@@ -151,14 +166,27 @@ in unit tests, no fabricated passes.
 
 ## Project status
 
-This repository is a **fully-specified, import-safe scaffold**: the contract layers
-(config, models, DB, router, server, design tokens, dataset) are implemented and
-verified — the server boots, serves the UI shell, and the test suite is green — and every
-feature module is a documented stub with an `IMPLEMENT` spec. Feature implementation
-proceeds through the seven phases in [`docs/BUILD_SPEC.md`](docs/BUILD_SPEC.md); paste the
-prompts in [`docs/CLAUDE_CODE_HANDOFF.md`](docs/CLAUDE_CODE_HANDOFF.md) to build it. This
-README describes the product being built; nothing here reports results that have not been
-produced.
+The feature build is **complete and verified**. On top of the concrete contract layers
+(config, models, DB, router, server, design tokens, dataset) the full application is
+implemented:
+
+- **Institutional memory** — retain / recall / reflect through a `MemoryStore` seam, with a
+  real Hindsight client and a faithful offline `LocalMemoryStore` behind the same interface.
+- **Agentic triage** — a tool-using reasoner (Groq or offline `LocalReasoner`) that emits a
+  cited brief, streamed token-by-token over SSE, and tolerates malformed tool calls.
+- **The learning loop** — resolving an incident retains a new memory and the counter ticks up.
+- **Accounts + RBAC** — email/password auth, HttpOnly session cookies, double-submit CSRF,
+  failed-login lockout, and a viewer/responder/admin role hierarchy enforced server-side
+  (first account created becomes admin).
+- **Dashboards** — MTTR by service and a learning curve, with accessible data-table fallbacks.
+
+Everything runs under the original constraints: Python standard library only, dependency-free
+vanilla-JS frontend, offline-first, no fabricated data (backends degrade to labeled offline
+fallbacks), and a green `unittest` suite. All incident data is **synthetic** and labeled as
+such. The phased build history is captured in
+[`docs/CLAUDE_CODE_PROMPTS.md`](docs/CLAUDE_CODE_PROMPTS.md) and
+[`docs/PRODUCTION_PLAN.md`](docs/PRODUCTION_PLAN.md); remaining ideas live in the
+"future / out-of-scope" list there.
 
 ## License
 

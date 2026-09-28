@@ -33,20 +33,29 @@ backend/
   config.py        # CONCRETE: env-driven Settings, backend resolution
   models.py        # CONCRETE: dataclasses (Incident, Memory, RecallResult, Brief, ...)
   db.py            # CONCRETE: sqlite schema + Repository
-  router.py        # CONCRETE: Request/Response, path routing, 404/501/500 handling
+  router.py        # CONCRETE: Request/Response, routing + auth/RBAC/CSRF, 404/501/500
   server.py        # CONCRETE: wiring + threaded HTTP server + static serving
-  api/routes.py    # STUBS: endpoint handlers (contract in docstring) + concrete route table
-  memory/          # STUBS: hindsight_client, hindsight_store, local_store, retrieval (+ base CONCRETE)
-  llm/             # STUBS: client (Groq+Local), tools, agent (+ prompts near-complete)
-  services/        # STUBS: incidents (learning loop), triage (orchestration), metrics
-static/            # CONCRETE contract: index.html shell, styles.css tokens, app.js api client + stubs
+  api/routes.py    # endpoint handlers + route table: (method, pattern, handler, required_role)
+  memory/          # hindsight_client, hindsight_store, local_store, retrieval (+ base)
+  llm/             # client (Groq+Local), tools, agent, prompts
+  services/        # incidents (learning loop), triage (orchestration), metrics, auth (accounts/sessions/RBAC/CSRF)
+static/            # index.html shell, styles.css tokens, app.js (api client + renderers), auth.js (boot gate + role gating)
 data/seed_sample.json  # CONCRETE: labeled synthetic sample (expand to ~60 per docs/DATASET.md)
-tests/             # runnable stdlib suite; concrete layers green, rest skipped-with-spec
+tests/             # runnable stdlib suite — all green (memory, retrieval, agent, services, api, auth, hardening, correctness)
 docs/              # SRS, ARCHITECTURE, PLAN, MVP, DATASET, UI_SPEC, TEST_PLAN, BUILD_SPEC, HINDSIGHT
 ```
 Every stub method carries an `IMPLEMENT (Claude Code):` spec in its docstring. The
 concrete files define the contracts you build against — don't change their signatures
-without reason.
+without reason. (The feature build is now complete; treat the specs as the record of
+intent when modifying a module.)
+
+## Auth / RBAC (Phase 3–4)
+Email/password accounts with HttpOnly session cookies + double-submit CSRF. Roles form a
+hierarchy `viewer < responder < admin`; the **first account created becomes admin**. Each
+route carries a `required_role` and the router enforces it (403 on too-low role, and CSRF
+on mutating methods); the frontend mirrors the same capability map so it never offers a
+control the server would reject. `GET /api/auth/me` re-issues the CSRF cookie so a session
+self-heals if the server secret rotated.
 
 ## Commands
 ```
@@ -56,6 +65,9 @@ python -m compileall backend tests              # import/syntax gate
 ```
 Config via env or `.env` (see `.env.example`): `HINDSIGHT_BASE_URL/API_KEY`,
 `GROQ_API_KEY`, `MUNINN_MEMORY_BACKEND=auto|hindsight|local`, `MUNINN_LLM_BACKEND`.
+Auth/security keys: `MUNINN_SERVER_SECRET` (CSRF HMAC key — set in any non-local deploy),
+`MUNINN_COOKIE_SECURE` (true behind HTTPS), `MUNINN_SESSION_TTL`/`MUNINN_SESSION_IDLE`,
+`MUNINN_LOGIN_MAX_ATTEMPTS`/`MUNINN_LOGIN_LOCKOUT`, `MUNINN_MAX_BODY_BYTES`.
 
 ## Hindsight usage (the 25% criterion — make it visible)
 - `retain` resolved incidents as `experience` memories (rich doc: symptom, signature,
