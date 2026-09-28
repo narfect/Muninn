@@ -25,8 +25,8 @@ from typing import Optional
 
 from ..config import Settings
 from ..db import Repository
-from ..errors import AuthError, ForbiddenError, LockedError
-from ..models import ADMIN, ROLES, VIEWER, User, now_ms
+from ..errors import AuthError, ForbiddenError, LockedError, NotFoundError
+from ..models import ADMIN, RESPONDER, ROLES, VIEWER, User, now_ms
 
 log = logging.getLogger("muninn.auth")
 
@@ -34,6 +34,17 @@ log = logging.getLogger("muninn.auth")
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 14, 8, 1
 _SCRYPT_MAXMEM = 64 * 1024 * 1024
 _PBKDF2_ROUNDS = 600_000
+
+# Open-demo accounts (LOCAL ONLY, gated by Settings.demo_open). One per role, addressed as
+# ``<role>@muninn.local`` so the SPA can recognise a demo session from its email. These are
+# reachable ONLY through demo_login (which mints a real session directly); their passwords
+# are random and discarded at creation, so there is no password path into them.
+DEMO_ACCOUNTS: tuple[tuple[str, str, str], ...] = (
+    (ADMIN, "admin@muninn.local", "Demo Admin"),
+    (RESPONDER, "responder@muninn.local", "Demo Responder"),
+    (VIEWER, "viewer@muninn.local", "Demo Viewer"),
+)
+_DEMO_EMAIL_BY_ROLE = {role: email for role, email, _ in DEMO_ACCOUNTS}
 
 # A tiny denylist of the most common passwords (server-side policy). Not exhaustive by
 # design — the length + not-all-numeric rules do the heavy lifting.
@@ -205,6 +216,38 @@ class AuthService:
         # Force a re-auth so the new role takes effect immediately everywhere.
         self.repo.delete_sessions_for_user(user_id)
         return user
+
+    # --- open demo mode (LOCAL ONLY; gated by Settings.demo_open) ----------
+    def ensure_demo_accounts(self) -> int:
+        """Idempotently create the pre-provisioned demo accounts (one per role). Returns the
+        number created. Each account is stored with a real salted hash of a random,
+        immediately-discarded password — the only way in is :meth:`demo_login`."""
+        created = 0
+        for role, email, name in DEMO_ACCOUNTS:
+            if self.repo.get_user_by_email(email) is not None:
+                continue
+            self.repo.create_user(User(
+                email=email, name=name, role=role,
+                password_hash=self.hash_password(secrets.token_urlsafe(32)),
+                created_at=now_ms(),
+            ))
+            created += 1
+        if created:
+            log.info("open-demo: provisioned %d demo account(s)", created)
+        return created
+
+    def demo_login(self, role: str) -> tuple[User, str, str]:
+        """Mint a REAL session for the demo account of ``role`` (no password accepted or
+        returned). Reuses the normal session/CSRF path. Raises NotFoundError for an unknown
+        role or a demo account that hasn't been provisioned."""
+        email = _DEMO_EMAIL_BY_ROLE.get((role or "").strip().lower())
+        if email is None:
+            raise NotFoundError("unknown demo role")
+        user = self.repo.get_user_by_email(email)
+        if user is None:
+            raise NotFoundError("demo account not available")
+        token, csrf = self._start_session(user)
+        return user, token, csrf
 
     # --- cookie helpers ---------------------------------------------------
     SESSION_COOKIE = "muninn_session"

@@ -134,6 +134,22 @@ class Settings:
         default_factory=lambda: int(_env("MUNINN_LOGIN_LOCKOUT", "900") or 900)
     )
 
+    # --- local demo conveniences (LOCAL ONLY — must be OFF in any real deployment) ---
+    # Autoseed the labeled synthetic dataset on startup when the incidents table is empty,
+    # so the app is never a blank slate for a judge/demo. No-op when data already exists.
+    demo_autoseed: bool = field(
+        default_factory=lambda: _env_bool("MUNINN_DEMO_AUTOSEED", True)
+    )
+    # OPEN DEMO MODE: skip the login gate and expose one-click role switching over
+    # pre-provisioned demo accounts. This means NO AUTHENTICATION, so it is force-disabled
+    # whenever a real MUNINN_SERVER_SECRET is configured (the production signal) — presence
+    # of that raw env var wins over the flag. `server_secret` itself is never empty (it
+    # falls back to a random per-process value), so we must consult the raw environment.
+    demo_open: bool = field(
+        default_factory=lambda: _env_bool("MUNINN_DEMO_OPEN", True)
+        and not bool(os.environ.get("MUNINN_SERVER_SECRET", "").strip())
+    )
+
     def resolved_memory_backend(self) -> str:
         """Decide which memory backend will actually be used."""
         if self.memory_backend == "hindsight":

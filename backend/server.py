@@ -16,6 +16,7 @@ intentionally complete so ``python -m backend.server`` starts a running skeleton
 """
 from __future__ import annotations
 
+import json
 import logging
 import mimetypes
 import os
@@ -24,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from .api import Routes
-from .config import Settings, settings as default_settings
+from .config import ROOT, Settings, settings as default_settings
 from .db import Repository, init_db
 from .llm import build_reasoner
 from .llm.agent import TriageAgent
@@ -38,6 +39,7 @@ from .services.triage import TriageService
 log = logging.getLogger("muninn.server")
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
+SAMPLE_PATH = ROOT / "data" / "seed_sample.json"
 
 
 @dataclass
@@ -73,6 +75,31 @@ def build_context(settings: Settings = default_settings) -> AppContext:
 
 def build_router(ctx: AppContext) -> Router:
     return Router(Routes(ctx).table(), auth=ctx.auth)
+
+
+def _maybe_autoseed(ctx: AppContext) -> None:
+    """Load the labeled synthetic dataset when the DB has no incidents and autoseed is on,
+    so the app is never a blank slate. No-op when data already exists or the flag is off."""
+    if not ctx.settings.demo_autoseed:
+        return
+    if ctx.repo.list_incidents(limit=1):
+        return  # data already present — leave it untouched
+    try:
+        data = json.loads(SAMPLE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("autoseed skipped: %s", exc)
+        return
+    counts = ctx.incidents.seed(data)  # reuses the exact /api/demo/seed path
+    log.info("autoseeded synthetic demo dataset: %s", counts)
+
+
+def bootstrap(ctx: AppContext) -> None:
+    """Startup side effects for the LOCAL demo, both flag-gated and idempotent: autoseed an
+    empty DB and provision the open-demo accounts. Kept out of :func:`build_context` so tests
+    wire the app without these effects and invoke this explicitly when they want them."""
+    _maybe_autoseed(ctx)
+    if ctx.settings.demo_open:
+        ctx.auth.ensure_demo_accounts()
 
 
 def _safe_static_path(url_path: str) -> str | None:
@@ -200,12 +227,14 @@ def run(settings: Settings = default_settings) -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     ctx = build_context(settings)
+    bootstrap(ctx)
     router = build_router(ctx)
     httpd = ThreadingHTTPServer((settings.host, settings.port),
                                 make_handler(router, settings.max_body_bytes))
-    log.info("Muninn listening on http://%s:%d  (memory=%s, llm=%s)",
+    log.info("Muninn listening on http://%s:%d  (memory=%s, llm=%s, demo_open=%s)",
              settings.host, settings.port,
-             settings.resolved_memory_backend(), settings.resolved_llm_backend())
+             settings.resolved_memory_backend(), settings.resolved_llm_backend(),
+             settings.demo_open)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

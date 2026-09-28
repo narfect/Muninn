@@ -76,6 +76,23 @@ class Routes:
         resp.cookies = [self.ctx.auth.csrf_cookie(csrf)]
         return resp
 
+    # --- open demo mode (LOCAL ONLY; public routes, gated by settings.demo_open) ---
+    def demo_status(self, req: "Request") -> "Response":
+        """Report whether open demo mode is available (no auth required to read this)."""
+        return Response.json({"enabled": bool(self.ctx.settings.demo_open),
+                              "roles": [VIEWER, RESPONDER, ADMIN]})
+
+    def demo_login(self, req: "Request") -> "Response":
+        """Mint a real session for a demo account when open demo mode is on; 404 when off.
+        Never accepts or returns a password — the role alone selects the account."""
+        if not self.ctx.settings.demo_open:
+            return Response.error("not found", status=404, code="not_found")
+        role = str(req.json().get("role", "")).strip().lower()
+        user, token, csrf = self.ctx.auth.demo_login(role)
+        resp = Response.json({"user": user.as_dict()})
+        resp.cookies = [self.ctx.auth.session_cookie(token), self.ctx.auth.csrf_cookie(csrf)]
+        return resp
+
     # --- users (admin) ----------------------------------------------------
     def list_users(self, req: "Request") -> "Response":
         return Response.json({"users": [u.as_dict() for u in self.ctx.repo.list_users()]})
@@ -254,12 +271,16 @@ class Routes:
         """(method, path_pattern, handler, required_role). ``{id}`` is a path parameter;
         ``required_role=None`` is a public route. The router matches these in order and
         enforces the role hierarchy (viewer < responder < admin); static/SPA is handled by
-        the server. Roles follow docs/PRODUCTION_PLAN.md §5: reads are viewer, incident
-        mutations + triage/compare + reflect are responder, demo + user admin are admin."""
+        the server. Roles follow docs/PRODUCTION_PLAN.md §5–§6: reads AND read-only analysis
+        (triage/compare/reflect/recall) are viewer, incident mutations (create/transition/
+        resolve/feedback) are responder, demo + user admin are admin. Open-demo status/login
+        are public and self-gate on ``settings.demo_open`` (404 when off)."""
         return [
             ("GET", "/api/health", self.health, None),
             ("POST", "/api/auth/signup", self.signup, None),
             ("POST", "/api/auth/login", self.login, None),
+            ("GET", "/api/auth/demo-status", self.demo_status, None),
+            ("POST", "/api/auth/demo-login", self.demo_login, None),
             ("POST", "/api/auth/logout", self.logout, VIEWER),
             ("GET", "/api/auth/me", self.auth_me, VIEWER),
             ("GET", "/api/services", self.list_services, VIEWER),
@@ -270,11 +291,11 @@ class Routes:
             ("POST", "/api/incidents/{id}/transition", self.transition_incident, RESPONDER),
             ("POST", "/api/incidents/{id}/resolve", self.resolve_incident, RESPONDER),
             ("POST", "/api/incidents/{id}/feedback", self.incident_feedback, RESPONDER),
-            ("POST", "/api/triage", self.triage, RESPONDER),
-            ("GET", "/api/triage/stream", self.triage_stream, RESPONDER),
-            ("POST", "/api/compare", self.compare, RESPONDER),
+            ("POST", "/api/triage", self.triage, VIEWER),
+            ("GET", "/api/triage/stream", self.triage_stream, VIEWER),
+            ("POST", "/api/compare", self.compare, VIEWER),
             ("POST", "/api/memory/recall", self.memory_recall, VIEWER),
-            ("POST", "/api/memory/reflect", self.memory_reflect, RESPONDER),
+            ("POST", "/api/memory/reflect", self.memory_reflect, VIEWER),
             ("GET", "/api/metrics/summary", self.metrics_summary, VIEWER),
             ("GET", "/api/metrics/mttr", self.metrics_mttr, VIEWER),
             ("GET", "/api/metrics/learning-curve", self.metrics_learning_curve, VIEWER),
