@@ -6,15 +6,28 @@
 
 /* ---- api client (concrete) ------------------------------------------------ */
 const api = {
+  // Mutating requests echo the JS-readable muninn_csrf cookie as X-CSRF-Token
+  // (double-submit). The HttpOnly session cookie rides along via fetch's default
+  // same-origin credentials — do NOT set credentials:"include".
+  _mutHeaders() {
+    const h = { "Content-Type": "application/json", "Accept": "application/json" };
+    const csrf = window.Auth && Auth.csrf();
+    if (csrf) h["X-CSRF-Token"] = csrf;
+    return h;
+  },
   async get(path) {
     const r = await fetch(path, { headers: { "Accept": "application/json" } });
     return this._json(r);
   },
   async post(path, body) {
     const r = await fetch(path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Accept": "application/json" },
-      body: JSON.stringify(body || {}),
+      method: "POST", headers: this._mutHeaders(), body: JSON.stringify(body || {}),
+    });
+    return this._json(r);
+  },
+  async patch(path, body) {
+    const r = await fetch(path, {
+      method: "PATCH", headers: this._mutHeaders(), body: JSON.stringify(body || {}),
     });
     return this._json(r);
   },
@@ -22,6 +35,9 @@ const api = {
     let data = null;
     try { data = await r.json(); } catch (_) { /* empty/non-json */ }
     if (!r.ok) {
+      // A 401 here means the session lapsed mid-app (boot uses auth.js's own fetch,
+      // so this never fires during the login gate) — bounce back to the auth screen.
+      if (r.status === 401 && window.Auth) Auth.onUnauthorized();
       const msg = (data && (data.message || data.error)) || `HTTP ${r.status}`;
       const err = new Error(msg); err.status = r.status; err.data = data; throw err;
     }
@@ -102,14 +118,20 @@ async function bootHealth() {
 
 /* ---- view router (concrete) ---------------------------------------------- */
 function router() {
-  const view = (location.hash.replace(/^#\//, "") || "console");
+  let view = (location.hash.replace(/^#\//, "") || "console");
+  // Users is admin-only — never route a non-admin into it (server 403s anyway).
+  if (view === "users" && !(window.Auth && Auth.can("users"))) view = "console";
   const isInsights = view === "insights";
-  $("#view-console").hidden = isInsights;
+  const isUsers = view === "users";
+  const isConsole = !isInsights && !isUsers;
+  $("#view-console").hidden = !isConsole;
   $("#view-insights").hidden = !isInsights;
+  $("#view-users").hidden = !isUsers;
   document.querySelectorAll(".viewlink").forEach((a) => {
     a.setAttribute("aria-current", a.dataset.view === view ? "page" : "false");
   });
   if (isInsights) renderInsights();
+  if (isUsers) renderUsers();
 }
 
 /* ---- render functions ----------------------------------------------------- */
@@ -203,12 +225,16 @@ async function renderActive() {
 
   const actions = el("div", "active-actions");
   actions.appendChild(toggle);
-  const run = el("button", "btn", "Run triage");
-  run.addEventListener("click", runTriage);
-  actions.appendChild(run);
-  const cmp = el("button", "btn btn-ghost", "Compare cold vs warm");
-  cmp.addEventListener("click", renderCompare);
-  actions.appendChild(cmp);
+  if (window.Auth && Auth.can("triage")) {
+    const run = el("button", "btn", "Run triage");
+    run.addEventListener("click", runTriage);
+    actions.appendChild(run);
+    const cmp = el("button", "btn btn-ghost", "Compare cold vs warm");
+    cmp.addEventListener("click", renderCompare);
+    actions.appendChild(cmp);
+  } else {
+    actions.appendChild(el("span", "role-note", "Read-only — responders can run triage."));
+  }
   host.appendChild(actions);
 
   const mount = el("div", "brief-mount"); mount.id = "brief-mount";
@@ -216,7 +242,7 @@ async function renderActive() {
 
   if (inc.status === "resolved") {
     host.appendChild(renderResolution(inc));
-  } else {
+  } else if (window.Auth && Auth.can("mutate")) {
     host.appendChild(renderResolveForm(inc));
   }
 
@@ -535,16 +561,117 @@ async function newIncident() {
   } catch (e) { toast(`Create failed: ${e.message}`); }
 }
 
+/* ---- users view (admin-only role management) ------------------------------ */
+// renderUsers(): GET /api/users -> table with a role <select> + Save per row.
+// PATCH /api/users/{id} {role}. Editing your own row is disabled (changing your
+// own role invalidates your session server-side — avoid locking yourself out).
+async function renderUsers() {
+  const host = $("#users-table");
+  clear(host);
+  if (!(window.Auth && Auth.can("users"))) {
+    host.appendChild(el("p", null, "Admins only.")); return;
+  }
+  let users;
+  try { users = (await api.get("/api/users")).users || []; }
+  catch (e) { host.appendChild(el("p", null, `Users unavailable: ${e.message}`)); return; }
+  if (!users.length) { host.appendChild(el("p", null, "No users.")); return; }
+
+  const me = Auth.user();
+  const table = el("table", "users-table");
+  const thead = el("thead"), htr = el("tr");
+  ["Name", "Email", "Role", ""].forEach((h) => htr.appendChild(el("th", null, h)));
+  thead.appendChild(htr); table.appendChild(thead);
+  const tbody = el("tbody");
+  for (const u of users) {
+    const isSelf = me && u.id === me.id;
+    const tr = el("tr");
+    tr.appendChild(el("td", null, u.name || "—"));
+    tr.appendChild(el("td", "mono", u.email));
+    const sel = el("select", "field role-select");
+    ["viewer", "responder", "admin"].forEach((r) => {
+      const opt = el("option", null, r); opt.value = r;
+      if (u.role === r) opt.selected = true; sel.appendChild(opt);
+    });
+    sel.disabled = !!isSelf;
+    const roleTd = el("td"); roleTd.appendChild(sel); tr.appendChild(roleTd);
+    const save = el("button", "btn btn-ghost", "Save"); save.disabled = !!isSelf;
+    save.addEventListener("click", async () => {
+      _busy(save, true);
+      try {
+        await api.patch(`/api/users/${u.id}`, { role: sel.value });
+        toast(`Updated ${u.email} → ${sel.value}.`);
+      } catch (e) { toast(`Update failed: ${e.message}`); }
+      _busy(save, false, "Save");
+    });
+    const actTd = el("td"); actTd.appendChild(isSelf ? el("span", "role-note", "you") : save);
+    tr.appendChild(actTd);
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody); host.appendChild(table);
+}
+function _busy(btn, on, label) { btn.disabled = on; if (label != null) btn.textContent = label; }
+
+/* ---- user chip + role gating --------------------------------------------- */
+function renderUserChip(user) {
+  const chip = $("#user-chip");
+  if (!chip || !user) return;
+  clear(chip); chip.hidden = false;
+  const btn = el("button", "chip-btn");
+  btn.setAttribute("aria-haspopup", "menu");
+  btn.setAttribute("aria-expanded", "false");
+  btn.appendChild(el("span", "chip-name", user.name || user.email));
+  btn.appendChild(el("span", `role-badge role-${user.role}`, user.role));
+  const menu = el("div", "chip-menu"); menu.hidden = true;
+  menu.setAttribute("role", "menu");
+  const out = el("button", "chip-item", "Sign out");
+  out.setAttribute("role", "menuitem");
+  out.addEventListener("click", () => Auth.logout());
+  menu.appendChild(out);
+  const setOpen = (open) => { menu.hidden = !open; btn.setAttribute("aria-expanded", String(open)); };
+  btn.addEventListener("click", (e) => { e.stopPropagation(); setOpen(menu.hidden); });
+  document.addEventListener("click", () => { if (!menu.hidden) setOpen(false); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !menu.hidden) setOpen(false); });
+  chip.appendChild(btn); chip.appendChild(menu);
+}
+
+// Hide controls the current role can't use (the server still enforces; this just
+// keeps the UI from offering a button that would 403). Mirrors the route table.
+function applyRoleGating() {
+  const A = window.Auth || { can: () => false };
+  const canSeed = A.can("seed");     // demo/seed + demo/reset = admin
+  const canMutate = A.can("mutate"); // create incident = responder
+  const canUsers = A.can("users");   // user administration = admin
+  ["btn-seed", "btn-seed-2"].forEach((id) => { const b = document.getElementById(id); if (b) b.hidden = !canSeed; });
+  const nb = $("#btn-new"); if (nb) nb.hidden = !canMutate;
+  const nu = $("#nav-users"); if (nu) nu.hidden = !canUsers;
+}
+
 /* ---- wire + boot ---------------------------------------------------------- */
+let _wired = false;
 function wire() {
+  if (_wired) return; _wired = true;
   ["btn-seed", "btn-seed-2"].forEach((id) => { const b = document.getElementById(id); if (b) b.addEventListener("click", seedDemo); });
   const nb = $("#btn-new"); if (nb) nb.addEventListener("click", newIncident);
   window.addEventListener("hashchange", router);
 }
 
-document.addEventListener("DOMContentLoaded", () => {
-  wire();
+// Boot callback — runs only AFTER Auth.require() confirms a live session, so no
+// app-data request ever fires while unauthenticated.
+function boot(user) {
+  renderUserChip(user);
+  applyRoleGating();
   router();
   bootHealth();
   renderQueue();
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  wire();
+  if (window.Auth) {
+    Auth.onAuthenticated(boot);
+    Auth.require();   // 200 -> boot(user); 401 -> auth screen, no data fetched
+  } else {
+    // auth.js failed to load — fail safe to the plain app rather than a blank page
+    router(); bootHealth(); renderQueue();
+  }
 });

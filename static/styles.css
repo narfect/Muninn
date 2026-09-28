@@ -16,6 +16,7 @@
   --sev2: #FF9F45;
   --sev3: #F5D66B;
   --ok: #3FD8A0;
+  --danger: #FF5C77;    /* destructive / sign-out / error text */
 
   /* type: mono for machine data + wordmark, sans for human prose */
   --mono: ui-monospace, "JetBrains Mono", "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
@@ -32,6 +33,12 @@
 }
 
 *, *::before, *::after { box-sizing: border-box; }
+
+/* The `hidden` attribute must always win, even over class rules that set an explicit
+   display (.auth-screen{flex}, .console{grid}) — those otherwise tie the UA
+   [hidden]{display:none} on specificity and beat it on source order, leaving a hidden
+   overlay painted (and intercepting clicks). */
+[hidden] { display: none !important; }
 
 html, body { height: 100%; }
 
@@ -232,3 +239,75 @@ a:hover { text-decoration: underline; }
 @media (max-width: 820px) {
   .compare, .stat-cards, .chart-grid { grid-template-columns: 1fr; }
 }
+
+/* ---- auth gate (full-viewport backdrop + centered dialog card) ----------- */
+.auth-screen {
+  position: fixed; inset: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: center; padding: var(--sp-5);
+  background: radial-gradient(1200px 600px at 50% -10%, #1b2740 0%, var(--bg) 60%);
+}
+.auth-card {
+  width: 100%; max-width: 380px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg);
+  padding: var(--sp-6); box-shadow: 0 24px 80px #0009;
+}
+.auth-brand { display: flex; align-items: baseline; gap: var(--sp-2); }
+.auth-brand .rune { font-size: var(--t-xl); }
+.auth-title { font-family: var(--mono); font-size: var(--t-lg); letter-spacing: 0.02em; }
+.auth-tagline { color: var(--muted); font-size: var(--t-sm); margin: var(--sp-1) 0 var(--sp-4); }
+.auth-tabs {
+  display: flex; gap: var(--sp-1); margin-bottom: var(--sp-4);
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; padding: 3px;
+}
+.auth-tab {
+  flex: 1; background: transparent; border: 0; color: var(--muted); cursor: pointer;
+  padding: 8px 12px; border-radius: 999px; font: 500 var(--t-sm)/1 var(--sans);
+}
+.auth-tab[aria-selected="true"] { background: var(--warm); color: var(--bg); }
+.auth-form { display: block; }
+.auth-form[hidden] { display: none; }
+.form-row { margin-bottom: var(--sp-3); }
+.form-row label { display: block; color: var(--muted); font-size: var(--t-xs); margin-bottom: var(--sp-1); }
+.field[aria-invalid="true"] { border-color: var(--danger); }
+.field-error { color: var(--danger); font-size: var(--t-sm); margin: 0 0 var(--sp-3); }
+.auth-hint { color: var(--muted); font-size: var(--t-xs); margin: 0 0 var(--sp-3); }
+.auth-submit { width: 100%; padding: 11px 14px; }
+
+/* ---- user chip (status bar) + role badges -------------------------------- */
+.user-chip { position: relative; }
+.chip-btn {
+  display: flex; align-items: center; gap: var(--sp-2);
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px;
+  color: var(--ink); cursor: pointer; padding: 5px 8px 5px 12px; font: 500 var(--t-sm)/1 var(--sans);
+}
+.chip-name { max-width: 16ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.role-badge {
+  font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+  border-radius: var(--r-sm); padding: 1px 6px; border: 1px solid var(--line); color: var(--muted);
+}
+.role-badge.role-admin { color: var(--warm); border-color: color-mix(in srgb, var(--warm) 45%, var(--line)); }
+.role-badge.role-responder { color: var(--cold); border-color: color-mix(in srgb, var(--cold) 45%, var(--line)); }
+.role-badge.role-viewer { color: var(--muted); }
+.chip-menu {
+  position: absolute; right: 0; top: calc(100% + 6px); min-width: 140px; z-index: 40;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-md);
+  box-shadow: 0 12px 40px #0009; padding: var(--sp-1);
+}
+.chip-menu[hidden] { display: none; }
+.chip-item {
+  display: block; width: 100%; text-align: left; background: transparent; border: 0;
+  color: var(--danger); cursor: pointer; padding: 8px 10px; border-radius: var(--r-sm);
+  font: 500 var(--t-sm)/1 var(--sans);
+}
+.chip-item:hover { background: var(--panel-2); }
+.role-note { color: var(--muted); font-size: var(--t-sm); font-style: italic; }
+
+/* ---- users view (admin role management) ---------------------------------- */
+.users-view { padding: var(--sp-6); }
+.users-table { width: 100%; border-collapse: collapse; margin-top: var(--sp-4); }
+.users-table th, .users-table td {
+  text-align: left; padding: var(--sp-3) var(--sp-3);
+  border-bottom: 1px solid var(--line); font-size: var(--t-sm); vertical-align: middle;
+}
+.users-table th { color: var(--muted); font-size: var(--t-xs); text-transform: uppercase; letter-spacing: .05em; }
+.role-select { width: auto; min-width: 130px; margin: 0; }

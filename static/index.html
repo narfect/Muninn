@@ -8,54 +8,72 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <!-- Status bar: honest about which backends are live (see GET /api/health) -->
-  <header class="statusbar" role="banner">
-    <div class="brand"><span class="rune" aria-hidden="true">ᛗ</span><span class="wordmark">muninn</span></div>
-    <div class="health" id="health" aria-live="polite">
-      <span class="badge" data-role="memory">memory: <b>…</b></span>
-      <span class="badge" data-role="llm">llm: <b>…</b></span>
-      <span class="badge" data-role="count"><b>—</b> memories</span>
-    </div>
-    <nav class="views" aria-label="Views">
-      <a href="#/console" class="viewlink" data-view="console">Console</a>
-      <a href="#/insights" class="viewlink" data-view="insights">Insights</a>
-    </nav>
-  </header>
+  <!-- Auth gate: full-viewport backdrop + centered card. auth.js fills #auth-root and
+       toggles it against #app. Shown until GET /api/auth/me returns 200. -->
+  <div id="auth-root" class="auth-screen" hidden aria-hidden="true"></div>
 
-  <!-- CONSOLE view: three-pane war-room -->
-  <main class="console" id="view-console" role="main">
-    <aside class="pane pane-queue" aria-label="Incident queue">
-      <div class="pane-head"><h2>Incidents</h2></div>
-      <div class="queue" id="queue"><!-- renderQueue() fills dense incident rows --></div>
-      <div class="queue-actions">
-        <button class="btn" id="btn-new">New incident</button>
-        <button class="btn btn-ghost" id="btn-seed">Seed demo data</button>
+  <!-- Authenticated application shell (hidden until the boot gate passes) -->
+  <div id="app" hidden>
+    <!-- Status bar: honest about which backends are live (see GET /api/health) -->
+    <header class="statusbar" role="banner">
+      <div class="brand"><span class="rune" aria-hidden="true">ᛗ</span><span class="wordmark">muninn</span></div>
+      <div class="health" id="health" aria-live="polite">
+        <span class="badge" data-role="memory">memory: <b>…</b></span>
+        <span class="badge" data-role="llm">llm: <b>…</b></span>
+        <span class="badge" data-role="count"><b>—</b> memories</span>
       </div>
-    </aside>
+      <nav class="views" aria-label="Views">
+        <a href="#/console" class="viewlink" data-view="console">Console</a>
+        <a href="#/insights" class="viewlink" data-view="insights">Insights</a>
+        <a href="#/users" class="viewlink" data-view="users" id="nav-users" hidden>Users</a>
+      </nav>
+      <!-- user chip (name + role badge + menu) — populated by app.js after boot -->
+      <div class="user-chip" id="user-chip" hidden></div>
+    </header>
 
-    <section class="pane pane-active" aria-label="Active incident">
-      <div id="active" class="active-empty">
-        <!-- empty state = invitation, not a void -->
-        <p class="empty-title">Muninn's memory is empty.</p>
-        <p class="empty-sub">Seed the demo dataset to watch it recall past outages.</p>
-        <button class="btn" id="btn-seed-2">Seed demo data</button>
-      </div>
-    </section>
+    <!-- CONSOLE view: three-pane war-room -->
+    <main class="console" id="view-console" role="main">
+      <aside class="pane pane-queue" aria-label="Incident queue">
+        <div class="pane-head"><h2>Incidents</h2></div>
+        <div class="queue" id="queue"><!-- renderQueue() fills dense incident rows --></div>
+        <div class="queue-actions">
+          <button class="btn" id="btn-new">New incident</button>
+          <button class="btn btn-ghost" id="btn-seed">Seed demo data</button>
+        </div>
+      </aside>
 
-    <aside class="pane pane-memory" aria-label="Recalled memory">
-      <div class="pane-head"><h2>What we've seen before</h2></div>
-      <div class="recall" id="memory"><!-- renderRecall() fills scored past incidents --></div>
-    </aside>
-  </main>
+      <section class="pane pane-active" aria-label="Active incident">
+        <div id="active" class="active-empty">
+          <!-- empty state = invitation, not a void -->
+          <p class="empty-title">Muninn's memory is empty.</p>
+          <p class="empty-sub">Seed the demo dataset to watch it recall past outages.</p>
+          <button class="btn" id="btn-seed-2">Seed demo data</button>
+        </div>
+      </section>
 
-  <!-- INSIGHTS view: MTTR + learning curve (labeled demo data) -->
-  <main class="insights" id="view-insights" role="main" hidden>
-    <h2>Insights <span class="demo-tag">demo dataset</span></h2>
-    <div class="charts" id="insights"><!-- renderInsights() draws MTTR + learning-curve --></div>
-  </main>
+      <aside class="pane pane-memory" aria-label="Recalled memory">
+        <div class="pane-head"><h2>What we've seen before</h2></div>
+        <div class="recall" id="memory"><!-- renderRecall() fills scored past incidents --></div>
+      </aside>
+    </main>
+
+    <!-- INSIGHTS view: MTTR + learning curve (labeled demo data) -->
+    <main class="insights" id="view-insights" role="main" hidden>
+      <h2>Insights <span class="demo-tag">demo dataset</span></h2>
+      <div class="charts" id="insights"><!-- renderInsights() draws MTTR + learning-curve --></div>
+    </main>
+
+    <!-- USERS view: admin-only role management (hidden from non-admin nav + router) -->
+    <main class="users-view" id="view-users" role="main" hidden>
+      <h2>Users <span class="demo-tag">admin</span></h2>
+      <div id="users-table"><!-- renderUsers() fills a table with a role select per user --></div>
+    </main>
+  </div>
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
+  <!-- auth.js MUST load before app.js (defines window.Auth used by the boot gate) -->
+  <script src="/auth.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
