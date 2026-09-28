@@ -194,7 +194,3 @@ such. The phased build history is captured in
 [`docs/PRODUCTION_PLAN.md`](docs/PRODUCTION_PLAN.md); remaining ideas live in the
 "future / out-of-scope" list there.
 
-## License
-
-MIT — see [`LICENSE`](LICENSE). All incident data is **synthetic** and labeled as such.
-
