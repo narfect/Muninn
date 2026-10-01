@@ -74,6 +74,19 @@ class Settings:
     hindsight_bank: str = field(
         default_factory=lambda: _env("HINDSIGHT_BANK", "muninn-incidents")
     )
+    # Reflect mission for the bank — the natural-language identity that frames `reflect`
+    # as an incident-memory analyst. Applied on bank create/update (see HindsightStore);
+    # override via HINDSIGHT_BANK_MISSION. Keep it an SRE-analyst framing so synthesis
+    # reads as grounded, blameless, action-oriented guidance.
+    hindsight_bank_mission: str = field(
+        default_factory=lambda: _env(
+            "HINDSIGHT_BANK_MISSION",
+            "You are the institutional memory for an on-call SRE team. Recall and "
+            "synthesize past incidents — their root causes, fixes, and recurring failure "
+            "patterns — to help responders triage new alerts faster. Prefer safe, "
+            "reversible mitigations and always ground recommendations in prior incidents.",
+        )
+    )
     # auto | hindsight | local
     memory_backend: str = field(
         default_factory=lambda: _env("MUNINN_MEMORY_BACKEND", "auto").lower()
@@ -98,6 +111,14 @@ class Settings:
     )
     recall_top_k: int = field(
         default_factory=lambda: int(_env("MUNINN_RECALL_TOP_K", "5") or 5)
+    )
+    # The raw Hindsight relevance score (`scores.final`) a near-identical ("I've seen this exact
+    # incident") match yields. Observed ~1.06-1.10 live; Hindsight's scale is NOT 0..1, so we
+    # divide by this to normalize recall scores onto 0..1 (see HindsightStore.recall). Raise it
+    # if live scores routinely exceed it (everything would saturate at 1.0 again); lower it if
+    # genuine matches never approach 1.0. Only affects the Hindsight backend.
+    hindsight_score_scale: float = field(
+        default_factory=lambda: float(_env("HINDSIGHT_SCORE_SCALE", "1.1") or 1.1)
     )
     # --- transport hardening (S9) ---
     # Reject request bodies larger than this (bytes) with HTTP 413 before reading them,

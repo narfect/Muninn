@@ -1,12 +1,12 @@
-# Muninn runs on the Python standard library alone — no install is required to run or
-# test the app offline (http.server, sqlite3, urllib, json, unittest).
+# Muninn has NO third-party Python dependencies.
 #
-# The two packages below are OPTIONAL accelerators used only if present:
-#   numpy    — faster vector math in the local retriever (pure-Python fallback exists)
-#   requests — convenience HTTP for the Groq/Hindsight clients (urllib fallback exists)
+# The entire runtime and test path uses only the Python 3.10+ standard library
+# (http.server, sqlite3, urllib, json, hmac, secrets, unittest). There is nothing to
+# install — "zero-install" is a real property, not a goal:
 #
-# Install only if you want the accelerated paths:
-#   pip install -r requirements.txt
-
-numpy==1.26.4
-requests==2.31.0
+#   python3 -m backend.server      # run
+#   make test                      # test
+#
+# This file is intentionally dependency-free. Do not add pins here unless a genuine
+# third-party import is introduced into the runtime path; adding one would break the
+# zero-install guarantee the README relies on.

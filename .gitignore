@@ -48,3 +48,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Generated PDF guides (not source)
+*.pdf
