@@ -99,6 +99,11 @@ class TriageAgent:
         brief.memory_backend = getattr(self.memory, "backend_name", "local")
         if not use_memory:
             brief.citations = []
+        # Ground confidence in ACTUAL recall so the cold⇄warm contrast is real and not left to
+        # the live model's whim. Offline this already happens in client.py; do the same here so
+        # the Groq path can't report high (or equal) confidence on a cold start. Mirrors the
+        # local formula: cold baseline 0.15; warm floored/scaled by the top recall score.
+        brief.confidence = _ground_confidence(brief, use_memory, seen_memories)
         if on_token:
             _stream_brief(brief, on_token)
         return brief
@@ -219,6 +224,27 @@ def _recalled_to_dicts(recalled: Optional[RecallResult]):
         {"content": m.content, "score": m.score, "source": m.source, "type": m.type}
         for m in recalled.memories
     ]
+
+
+def _ground_confidence(brief: "Brief", use_memory: bool,
+                       seen_memories: list[dict[str, Any]]) -> float:
+    """Grade warm confidence by ACTUAL recall quality so it varies per incident instead of
+    pinning to one constant. Recall scores are normalized to 0..1 upstream (local cosine and
+    Hindsight alike — see HindsightStore.recall), so a near-identical past incident lands near
+    1.0 and a loose match far lower.
+
+    Cold / no recall -> 0.15: a cold start cannot be confident. Warm with recall -> blend the
+    top normalized match quality with the model's own calibrated confidence, clamped into a
+    grounded band [0.4, 0.95] so memory visibly raises confidence while nothing ever reports a
+    hardcoded-looking 0.95 for every match."""
+    grounded = [m for m in seen_memories if isinstance(m, dict)]
+    if not use_memory or not grounded:
+        return 0.15
+    top = max((float(m.get("score") or 0.0) for m in grounded), default=0.0)
+    top = max(0.0, min(1.0, top))
+    model_conf = max(0.0, min(1.0, float(brief.confidence or 0.0)))
+    blended = 0.5 * top + 0.5 * model_conf
+    return round(max(0.4, min(0.95, blended)), 2)
 
 
 def _degrade(memories: list[dict[str, Any]]) -> Brief:

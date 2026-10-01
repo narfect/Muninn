@@ -75,32 +75,52 @@ class GroqClient(Reasoner):
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
-        try:
-            data = json.dumps(payload).encode("utf-8")
-            req = urllib.request.Request(
-                f"{self.base_url}/chat/completions",
-                data=data,
-                method="POST",
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                    "Authorization": f"Bearer {self.api_key}",
-                    # Cloudflare in front of api.groq.com blocks urllib's default UA with a
-                    # 403 "error code: 1010", so a live call never reaches the API. Send an
-                    # explicit UA so the request is allowed through.
-                    "User-Agent": "Muninn/1.0",
-                },
-            )
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                raw = resp.read().decode("utf-8") or "{}"
-            parsed = json.loads(raw)
-            return self._normalize(parsed)
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
-            log.warning("groq unreachable: %s", exc)
-        except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
-            log.warning("groq bad response: %s", exc)
-        except Exception as exc:  # noqa: BLE001 - chat must never raise
-            log.warning("groq unexpected error: %s", exc)
+        data = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+            # Cloudflare in front of api.groq.com blocks urllib's default UA with a 403
+            # "error code: 1010", so a live call never reaches the API without this.
+            "User-Agent": "Muninn/1.0",
+        }
+        for attempt in range(self._MAX_ATTEMPTS):
+            try:
+                req = urllib.request.Request(
+                    f"{self.base_url}/chat/completions", data=data, method="POST",
+                    headers=headers,
+                )
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    raw = resp.read().decode("utf-8") or "{}"
+                return self._normalize(json.loads(raw))
+            except urllib.error.HTTPError as exc:
+                body = self._err_body(exc)
+                detail = f"HTTP {exc.code}: {body[:800]}"
+                last = attempt == self._MAX_ATTEMPTS - 1
+                # Retry rate-limits (429), server errors (5xx), and the intermittent 400 we see
+                # on deep tool-call chains — all have shown up as transient. Honor Retry-After.
+                if exc.code in (400, 429, 500, 502, 503, 504) and not last:
+                    delay = self._retry_after(exc) or self._BACKOFF[attempt]
+                    log.warning("groq %s — retry %d/%d in %.1fs",
+                                detail, attempt + 1, self._MAX_ATTEMPTS, delay)
+                    time.sleep(delay)
+                    continue
+                log.warning("groq request failed: %s", detail)
+                break
+            except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+                if attempt < self._MAX_ATTEMPTS - 1:
+                    log.warning("groq transport error (%s) — retry %d/%d",
+                                exc, attempt + 1, self._MAX_ATTEMPTS)
+                    time.sleep(self._BACKOFF[attempt])
+                    continue
+                log.warning("groq unreachable: %s", exc)
+                break
+            except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
+                log.warning("groq bad response: %s", exc)
+                break
+            except Exception as exc:  # noqa: BLE001 - chat must never raise
+                log.warning("groq unexpected error: %s", exc)
+                break
         return {"content": "", "tool_calls": []}
 
     @staticmethod
@@ -129,6 +149,36 @@ class GroqClient(Reasoner):
                     args = {}
             tool_calls.append({"id": str(tc.get("id", "")), "name": name, "arguments": args})
         return {"content": content, "tool_calls": tool_calls}
+
+    _MAX_ATTEMPTS = 3
+    _BACKOFF = (0.5, 1.5, 3.0)
+
+    @staticmethod
+    def _err_body(exc: "urllib.error.HTTPError") -> str:
+        """Best-effort read of an HTTPError body (handles gzip + unreadable streams) so the
+        real Groq error is logged instead of a blank 'unreachable'."""
+        try:
+            raw = exc.read()
+        except Exception:  # noqa: BLE001
+            return "<body unreadable>"
+        if exc.headers.get("Content-Encoding", "").lower() == "gzip":
+            try:
+                import gzip
+                raw = gzip.decompress(raw)
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            return raw.decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            return "<body undecodable>"
+
+    @staticmethod
+    def _retry_after(exc: "urllib.error.HTTPError") -> Optional[float]:
+        try:
+            v = exc.headers.get("Retry-After")
+            return min(5.0, float(v)) if v else None
+        except (TypeError, ValueError):
+            return None
 
     def health(self):
         """Cheap, cached liveness probe of the Groq endpoint. NEVER raises and NEVER touches
