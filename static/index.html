@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Muninn — incident memory</title>
   <meta name="description" content="An incident-response copilot that remembers past outages." />
-  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/styles.css?v=20261001-header" />
 </head>
 <body>
   <!-- Auth gate: full-viewport backdrop + centered card. auth.js fills #auth-root and
@@ -25,6 +25,7 @@
         <span class="badge" data-role="count"><b>—</b> memories</span>
       </div>
       <nav class="views" aria-label="Views">
+        <a href="#/home" class="viewlink" data-view="home">Home</a>
         <a href="#/console" class="viewlink" data-view="console">Console</a>
         <a href="#/insights" class="viewlink" data-view="insights">Insights</a>
         <a href="#/users" class="viewlink" data-view="users" id="nav-users" hidden>Users</a>
@@ -32,6 +33,25 @@
       <!-- user chip (name + role badge + menu) — populated by app.js after boot -->
       <div class="user-chip" id="user-chip" hidden></div>
     </header>
+
+    <!-- HOME view: product overview and entry point -->
+    <main class="home-view" id="view-home" role="main" hidden>
+      <section class="home-hero">
+        <p class="home-kicker">incident response with institutional memory</p>
+        <h2>When production breaks,<br><span>Muninn remembers.</span></h2>
+        <p class="home-lead">Muninn is an incident-response copilot that recalls how your team solved similar outages, turns that knowledge into a cited triage brief, and learns from every resolution.</p>
+        <div class="home-cta">
+          <a class="btn" href="#/console">Open incident console →</a>
+          <a class="btn btn-ghost" href="#/insights">View learning insights</a>
+        </div>
+      </section>
+      <section class="home-cards" aria-label="How Muninn works">
+        <article class="home-card"><div class="home-number">01</div><h3>Recall what happened before</h3><p>Find similar incidents, root causes, fixes, runbooks, responders, and MTTR from institutional memory.</p></article>
+        <article class="home-card"><div class="home-number">02</div><h3>Respond with evidence</h3><p>Compare a cold generic triage brief with a warm, memory-grounded recommendation and citations.</p></article>
+        <article class="home-card"><div class="home-number">03</div><h3>Remember the resolution</h3><p>Resolve the incident and retain the outcome so the next responder starts with more context.</p></article>
+      </section>
+      <section class="home-loop"><div><strong>The learning loop</strong><br><span>retain → recall → reflect → resolve → retain</span></div><span class="home-loop-stats">Memory-backed triage, measured over time.</span></section>
+    </main>
 
     <!-- CONSOLE view: three-pane war-room -->
     <main class="console" id="view-console" role="main">

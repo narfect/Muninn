@@ -121,12 +121,15 @@ async function bootHealth() {
 
 /* ---- view router (concrete) ---------------------------------------------- */
 function router() {
-  let view = (location.hash.replace(/^#\//, "") || "console");
+  let view = (location.hash.replace(/^#\//, "") || "home");
   // Users is admin-only — never route a non-admin into it (server 403s anyway).
   if (view === "users" && !(window.Auth && Auth.can("users"))) view = "console";
+  if (!["home", "console", "insights", "users"].includes(view)) view = "home";
+  const isHome = view === "home";
   const isInsights = view === "insights";
   const isUsers = view === "users";
-  const isConsole = !isInsights && !isUsers;
+  const isConsole = view === "console";
+  $("#view-home").hidden = !isHome;
   $("#view-console").hidden = !isConsole;
   $("#view-insights").hidden = !isInsights;
   $("#view-users").hidden = !isUsers;
