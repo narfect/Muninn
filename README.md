@@ -47,18 +47,21 @@ grows. (All over a clearly-labeled synthetic dataset.)
 
 ## Quick start
 
-No API keys and no internet required — Muninn runs fully offline with a local memory
-store and a local reasoner.
+Muninn runs **fully offline** — no API keys, no internet, no install. All you need is
+**Python 3.10+**.
 
 ```bash
-git clone <your-repo-url> muninn && cd muninn
-python3 -m backend.server          # -> http://127.0.0.1:8000
+git clone https://github.com/narfect/Muninn muninn && cd muninn
+python3 -m backend.server
 ```
 
-Open the URL. The local build boots in **open demo mode** — no login needed. The queue is
-already seeded with labeled synthetic incidents, and a status-bar switcher lets you view as
-**Viewer / Responder / Admin** (each mints a real session for that role). Pick a SEV1 alert
-and flip **Cold ⇄ Warm**, or hit **Compare cold vs warm**.
+Then open **http://127.0.0.1:8000**. (Prefer `make`? `make run` does the same thing, and
+`make help` lists every target.)
+
+The app boots in **open demo mode** — no login needed. The queue is already seeded with
+labeled synthetic incidents, and a status-bar switcher lets you act as **Viewer / Responder
+/ Admin** (each mints a real session for that role). Pick a SEV1 alert and flip
+**Cold ⇄ Warm**, or hit **Compare cold vs warm** — that's the whole thesis in one click.
 
 Roles gate what the UI offers and what the server allows: **viewer** reads incidents,
 recalled memory, and can run triage/compare; **responder** can also create and resolve
@@ -70,23 +73,59 @@ signal) and it switches off automatically — the sign-in gate returns and **the
 account created becomes the admin**. The full running guide, per-role capability table, and
 a judge walkthrough are in [`docs/USING_MUNINN.md`](docs/USING_MUNINN.md).
 
-Run the tests:
+### Stop & restart
+
+The server runs in the foreground, so **Ctrl-C** stops it. To run it in the background
+(handy for a demo so you keep the terminal), redirect its log and background it:
 
 ```bash
-python3 -m unittest discover -s tests -v     # or: make test
+PYTHONPATH="$PWD" python3 -m backend.server > run.log 2>&1 &
 ```
+
+Stop a backgrounded server with:
+
+```bash
+pkill -f backend.server
+```
+
+Restarting is safe even with the browser tab still open — the SPA automatically
+re-establishes its session, so you never see a stale-token error after a restart.
+
+### Run the tests
+
+```bash
+python3 -m unittest discover -s tests -q
+```
+
+On **macOS**, raise the open-file limit first (the full serial run opens many SQLite/WAL
+file descriptors and the default limit of 256 is too low):
+
+```bash
+ulimit -n 8192 && python3 -m unittest discover -s tests -q
+```
+
+`make test` runs the suite and `make compile` is the import/syntax gate.
 
 ### Turn on the real backends (optional)
 
 ```bash
 cp .env.example .env
-# add GROQ_API_KEY for real LLM reasoning (Groq, OpenAI-compatible)
-# add HINDSIGHT_BASE_URL + HINDSIGHT_API_KEY for the real Hindsight memory service
 ```
+
+Then edit `.env` and set:
+
+- `GROQ_API_KEY` — real LLM reasoning via Groq (OpenAI-compatible).
+- `HINDSIGHT_BASE_URL` + `HINDSIGHT_API_KEY` — the real Hindsight memory service.
 
 Backend selection is automatic (`auto`): real service when credentials are present,
 offline fallback otherwise. The UI badges always show which path is live (`hindsight`/
 `local`, `groq`/`local`) so a demo is never misleading.
+
+**Pacing a live demo:** Groq's free tier allows about 8000 tokens per minute. Rapid
+back-to-back triages can briefly hit that ceiling — the client retries and honors the
+rate-limit backoff, and any single call that can't reach a live backend degrades to the
+labeled offline fallback rather than failing. If you're sweeping many incidents, give it a
+few seconds between runs for the snappiest, always-live experience.
 
 For any non-local deployment, also set **`MUNINN_SERVER_SECRET`** to a strong random value
 (it keys the per-session CSRF tokens) and **`MUNINN_COOKIE_SECURE=true`** when serving over
@@ -136,23 +175,22 @@ semantic memory. Details and diagrams: [`docs/ARCHITECTURE.md`](docs/ARCHITECTUR
 
 ```
 backend/    config·models·db·router·server (concrete) + memory·llm·services·api
-static/     index.html · styles.css (design tokens) · app.js (api client)
+static/     index.html · styles.css (design tokens) · app.js · auth.js (SPA + api client)
 data/       seed_sample.json (labeled synthetic dataset)
 tests/      stdlib unittest suite (memory · retrieval · agent · services · api ·
             auth · hardening · correctness)
-docs/       SRS · ARCHITECTURE · PLAN · MVP · DATASET · UI_SPEC · TEST_PLAN ·
-            BUILD_SPEC · HINDSIGHT · DEMO_SCRIPT · SUBMISSION_CHECKLIST ·
-            CLAUDE_CODE_HANDOFF
-content/    ARTICLE · SOCIAL · VIDEO_SCRIPT (submission write-ups)
-CLAUDE.md   build guide for the coding agent
+docs/       SRS · ARCHITECTURE · PLAN · MVP · HINDSIGHT · TEST_PLAN · USING_MUNINN
 ```
 
 ## Testing & quality
 
 ```bash
-make compile     # import/syntax gate (compileall)
-make test        # full unittest suite
+make compile
+make test
 ```
+
+`make compile` is the import/syntax gate (compileall); `make test` runs the full unittest
+suite.
 
 Every layer ships with green tests — memory (local + Hindsight parity), retrieval, the
 agent (including malformed-tool-call handling), services, the API endpoints, auth/RBAC,

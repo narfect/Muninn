@@ -109,6 +109,24 @@
       _demo = true;
       return data.user;
     },
+
+    // Silently re-establish a session + fresh CSRF token when a mutation is rejected for a
+    // stale/invalid token (typically the server was restarted under an open tab). Returns true
+    // if a usable session was minted. In open-demo mode this re-runs demo-login as the current
+    // role — demo-login is CSRF-exempt, so a stale token cannot block the recovery. With a real
+    // account there is nothing to renew without credentials, so it reports failure and the
+    // caller falls back to the normal sign-in gate.
+    async reauth() {
+      try {
+        if (_demo) {
+          const role = (_user && _user.role) || "admin";
+          await Auth.demoLogin(role);
+          return true;
+        }
+      } catch (_) { /* recovery unavailable — fall through */ }
+      return false;
+    },
+
     // Open the real login/sign-up screen even while in demo mode; a "back to demo" escape
     // is offered so the visitor is never trapped at the gate.
     openLogin() { _returnToDemo = _demo; _showAuth(); },

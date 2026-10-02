@@ -19,18 +19,32 @@ const api = {
     const r = await fetch(path, { headers: { "Accept": "application/json" } });
     return this._json(r);
   },
-  async post(path, body) {
-    const r = await fetch(path, {
-      method: "POST", headers: this._mutHeaders(), body: JSON.stringify(body || {}),
-    });
-    return this._json(r);
+  // True only for a 403 caused by a stale/invalid CSRF token — NOT an RBAC denial (which carries
+  // a different message), so least-privilege 403s are never masked or retried.
+  _isCsrfError(err) {
+    return !!(err && err.status === 403 && /csrf/i.test(err.message || ""));
   },
-  async patch(path, body) {
-    const r = await fetch(path, {
-      method: "PATCH", headers: this._mutHeaders(), body: JSON.stringify(body || {}),
-    });
-    return this._json(r);
+  async _send(method, path, body) {
+    const once = async () => {
+      const r = await fetch(path, {
+        method, headers: this._mutHeaders(), body: JSON.stringify(body || {}),
+      });
+      return this._json(r);
+    };
+    try {
+      return await once();
+    } catch (e) {
+      // A stale-CSRF 403 usually means the server was restarted under an open tab. Re-establish
+      // the session once and retry so a live run never surfaces the raw token error. _mutHeaders()
+      // re-reads the now-fresh muninn_csrf cookie on the retry.
+      if (this._isCsrfError(e) && window.Auth && Auth.reauth && (await Auth.reauth())) {
+        return await once();
+      }
+      throw e;
+    }
   },
+  async post(path, body) { return this._send("POST", path, body); },
+  async patch(path, body) { return this._send("PATCH", path, body); },
   async _json(r) {
     let data = null;
     try { data = await r.json(); } catch (_) { /* empty/non-json */ }
